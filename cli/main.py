@@ -395,7 +395,7 @@ def update_display(layout, spinner_text=None):
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def get_user_selections():
+def get_user_selections(ticker: Optional[str] = None):
     """Get all user selections before starting the analysis display."""
     # Display ASCII art welcome message
     with open("./cli/static/welcome.txt", "r") as f:
@@ -430,12 +430,16 @@ def get_user_selections():
         return Panel(box_content, border_style="blue", padding=(1, 2))
 
     # Step 1: Ticker symbol
-    console.print(
-        create_question_box(
-            "Step 1: Ticker Symbol", "Enter the ticker symbol to analyze", "SPY"
+    if ticker:
+        selected_ticker = ticker.upper()
+        console.print(f"[green]Using ticker from command line:[/green] {selected_ticker}")
+    else:
+        console.print(
+            create_question_box(
+                "Step 1: Ticker Symbol", "Enter the ticker symbol to analyze", "SPY"
+            )
         )
-    )
-    selected_ticker = get_ticker()
+        selected_ticker = get_ticker()
 
     # Step 2: Analysis date
     default_date = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -531,7 +535,7 @@ def display_complete_report(final_state):
     if final_state.get("market_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["market_report"]),
+                Markdown(extract_content_string(final_state["market_report"])),
                 title="Market Analyst",
                 border_style="blue",
                 padding=(1, 2),
@@ -542,7 +546,7 @@ def display_complete_report(final_state):
     if final_state.get("sentiment_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["sentiment_report"]),
+                Markdown(extract_content_string(final_state["sentiment_report"])),
                 title="Social Analyst",
                 border_style="blue",
                 padding=(1, 2),
@@ -553,7 +557,7 @@ def display_complete_report(final_state):
     if final_state.get("news_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["news_report"]),
+                Markdown(extract_content_string(final_state["news_report"])),
                 title="News Analyst",
                 border_style="blue",
                 padding=(1, 2),
@@ -564,7 +568,7 @@ def display_complete_report(final_state):
     if final_state.get("fundamentals_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["fundamentals_report"]),
+                Markdown(extract_content_string(final_state["fundamentals_report"])),
                 title="Fundamentals Analyst",
                 border_style="blue",
                 padding=(1, 2),
@@ -590,7 +594,7 @@ def display_complete_report(final_state):
         if debate_state.get("bull_history"):
             research_reports.append(
                 Panel(
-                    Markdown(debate_state["bull_history"]),
+                    Markdown(extract_content_string(debate_state["bull_history"])),
                     title="Bull Researcher",
                     border_style="blue",
                     padding=(1, 2),
@@ -601,7 +605,7 @@ def display_complete_report(final_state):
         if debate_state.get("bear_history"):
             research_reports.append(
                 Panel(
-                    Markdown(debate_state["bear_history"]),
+                    Markdown(extract_content_string(debate_state["bear_history"])),
                     title="Bear Researcher",
                     border_style="blue",
                     padding=(1, 2),
@@ -612,7 +616,7 @@ def display_complete_report(final_state):
         if debate_state.get("judge_decision"):
             research_reports.append(
                 Panel(
-                    Markdown(debate_state["judge_decision"]),
+                    Markdown(extract_content_string(debate_state["judge_decision"])),
                     title="Research Manager",
                     border_style="blue",
                     padding=(1, 2),
@@ -634,7 +638,7 @@ def display_complete_report(final_state):
         console.print(
             Panel(
                 Panel(
-                    Markdown(final_state["trader_investment_plan"]),
+                    Markdown(extract_content_string(final_state["trader_investment_plan"])),
                     title="Trader",
                     border_style="blue",
                     padding=(1, 2),
@@ -654,7 +658,7 @@ def display_complete_report(final_state):
         if risk_state.get("risky_history"):
             risk_reports.append(
                 Panel(
-                    Markdown(risk_state["risky_history"]),
+                    Markdown(extract_content_string(risk_state["risky_history"])),
                     title="Aggressive Analyst",
                     border_style="blue",
                     padding=(1, 2),
@@ -665,7 +669,7 @@ def display_complete_report(final_state):
         if risk_state.get("safe_history"):
             risk_reports.append(
                 Panel(
-                    Markdown(risk_state["safe_history"]),
+                    Markdown(extract_content_string(risk_state["safe_history"])),
                     title="Conservative Analyst",
                     border_style="blue",
                     padding=(1, 2),
@@ -676,7 +680,7 @@ def display_complete_report(final_state):
         if risk_state.get("neutral_history"):
             risk_reports.append(
                 Panel(
-                    Markdown(risk_state["neutral_history"]),
+                    Markdown(extract_content_string(risk_state["neutral_history"])),
                     title="Neutral Analyst",
                     border_style="blue",
                     padding=(1, 2),
@@ -698,7 +702,7 @@ def display_complete_report(final_state):
             console.print(
                 Panel(
                     Panel(
-                        Markdown(risk_state["judge_decision"]),
+                        Markdown(extract_content_string(risk_state["judge_decision"])),
                         title="Portfolio Manager",
                         border_style="blue",
                         padding=(1, 2),
@@ -735,9 +739,9 @@ def extract_content_string(content):
     else:
         return str(content)
 
-def run_analysis():
+def run_analysis(ticker: Optional[str] = None):
     # First get all user selections
-    selections = get_user_selections()
+    selections = get_user_selections(ticker)
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -793,7 +797,7 @@ def run_analysis():
                 if content:
                     file_name = f"{section_name}.md"
                     with open(report_dir / file_name, "w") as f:
-                        f.write(content)
+                        f.write(extract_content_string(content))
         return wrapper
 
     message_buffer.add_message = save_message_decorator(message_buffer, "add_message")
@@ -1101,8 +1105,11 @@ def run_analysis():
 
 
 @app.command()
-def analyze():
-    run_analysis()
+def analyze(
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Stock ticker symbol to analyze (e.g., SPY, AAPL)")
+):
+    """Run trading analysis on a stock ticker."""
+    run_analysis(ticker)
 
 
 if __name__ == "__main__":

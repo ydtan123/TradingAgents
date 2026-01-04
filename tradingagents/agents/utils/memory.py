@@ -1,25 +1,53 @@
 import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
+import os
 
 
 class FinancialSituationMemory:
     def __init__(self, name, config):
-        if config["backend_url"] == "http://localhost:11434/v1":
+        self.backend_url = config["backend_url"]
+        self.llm_provider = config.get("llm_provider", "openai").lower()
+        
+        if self.backend_url == "http://localhost:11434/v1":
             self.embedding = "nomic-embed-text"
+            self.client = OpenAI(base_url=self.backend_url, api_key="ollama")
+        elif "google" in self.llm_provider or "genai" in self.llm_provider:
+            # Use Google's embeddings API
+            try:
+                from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                self.embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+                self.client = None
+            except ImportError:
+                # Fallback to text-embedding-3-small
+                self.embedding = "text-embedding-3-small"
+                self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         else:
+            # Use OpenAI embeddings
             self.embedding = "text-embedding-3-small"
-        self.client = OpenAI(base_url=config["backend_url"])
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
         self.chroma_client = chromadb.Client(Settings(allow_reset=True))
         self.situation_collection = self.chroma_client.create_collection(name=name)
 
     def get_embedding(self, text):
-        """Get OpenAI embedding for a text"""
+        """Get embedding for a text"""
         
-        response = self.client.embeddings.create(
-            model=self.embedding, input=text
-        )
-        return response.data[0].embedding
+        if self.backend_url == "http://localhost:11434/v1":
+            # Ollama embeddings
+            response = self.client.embeddings.create(
+                model=self.embedding, input=text
+            )
+            return response.data[0].embedding
+        elif hasattr(self, 'embeddings_model'):
+            # Google embeddings
+            return self.embeddings_model.embed_query(text)
+        else:
+            # OpenAI embeddings
+            response = self.client.embeddings.create(
+                model=self.embedding, input=text
+            )
+            return response.data[0].embedding
 
     def add_situations(self, situations_and_advice):
         """Add financial situations and their corresponding advice. Parameter is a list of tuples (situation, rec)"""
