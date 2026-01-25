@@ -30,7 +30,6 @@ def make_request(url, headers):
     response = requests.get(url, headers=headers)
     return response
 
-
 def getNewsData(query, start_date, end_date):
     """
     Scrape Google News search results for a given query and date range.
@@ -67,8 +66,8 @@ def getNewsData(query, start_date, end_date):
             response = make_request(url, headers)
             soup = BeautifulSoup(response.content, "html.parser")
             results_on_page = soup.select("div.SoaBEf")
-
             if not results_on_page:
+                print("No results found on this page.")
                 break  # No more results found
 
             for el in results_on_page:
@@ -78,6 +77,7 @@ def getNewsData(query, start_date, end_date):
                     snippet = el.select_one(".GI74Re").get_text()
                     date = el.select_one(".LfVVr").get_text()
                     source = el.select_one(".NUnG9d span").get_text()
+                    print(f"Found article: {title} from {source} on {date}")
                     news_results.append(
                         {
                             "link": link,
