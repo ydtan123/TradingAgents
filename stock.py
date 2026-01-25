@@ -3,10 +3,14 @@ import argparse
 from datetime import datetime
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
-import google.generativeai as genai
+from prompts import STOCK_LIST
+from google import genai
 import pandas as pd
 from io import StringIO
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.google import get_fundamentals_google, get_google_news_AI
+from tradingagents.dataflows.config import set_config
+
 import os
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,29 +26,14 @@ def find_stock_candidates():
     if not api_key:
         raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
     
+    #genai.configure(api_key=api_key)
+    #model = genai.GenerativeModel('gemini-3-pro-preview')
+    full_prompt = STOCK_LIST
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-3-pro-preview",
+        contents=full_prompt)
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3-pro-preview')
-    full_prompt = """Generate a plain-text list of 30 Yahoo Finance ticker symbols for US equities that meet these criteria:
-    REQUIRED:
-    - Listed on major exchanges in NYSE and NASDAQ
-    - Mid-cap to large-cap (market cap greater than $500M USD)
-    - Reasonable liquidity (average daily volume >$500k USD)
-    - Growth potential: revenue growth >15% annually OR margin expansion trajectory
-    - Value characteristics: P/E <50
-    - NO PFIC reporting risks   
-    FORMAT:
-    - Yahoo Finance format tickers
-    - One company per line with columns: Ticker, Company Name, Revenue Growth %, P/E Ratio, Market Cap
-    - Market Cap is a number, the unit of which is millions of USD (e.g., 1500 = $1.5B)
-    - Columns separated by commas. Column names have no leading or trailing spaces.
-    - The first row should be the header row with these column titles: Ticker, Company Name, Revenue Growth %, P/E Ratio, Market Cap.
-    - The rest of rows are sorted by revenue growth rate in descending order.
-    - No explanations or additional text
-    Focus on: industrials, technology, consumer discretionary, healthcare
-    Exclude: financials, REITs, utilities, telecoms
-    """
-    response = model.generate_content(full_prompt)
     # Convert the CSV-formatted string to a pandas DataFrame
     df = pd.read_csv(StringIO(response.text))
     
@@ -226,10 +215,41 @@ if __name__ == "__main__":
                         help='Analysis date in YYYY-MM-DD format (default: today)')
     parser.add_argument('--find-candidates', '-f', action='store_true',
                         help='Find stock candidates first using LLM before analysis')
+    parser.add_argument('--test', action='store_true',
+                        help='Run in test mode with mock data')
     args = parser.parse_args()
     
+    # Create a custom config
+    config = DEFAULT_CONFIG.copy()
+    # Use Google Gemini models
+    config["llm_provider"] = "google"
+    config["deep_think_llm"] = "gemini-3-pro-preview"  # Use a different model
+    config["quick_think_llm"] = "gemini-2.5-flash"  # Use a different model
+    config["max_debate_rounds"] = 1  # Increase debate rounds
+    config["backend_url"] = ""
+
+    # Use Aliyun Dashscope LLMs
+    #config["llm_provider"] = "QWEN"
+    #config["deep_think_llm"] = "qwen-plus"  # Use a different model
+    #config["quick_think_llm"] = "qwen-2.5-flash"  # Use a different model
+    #config["max_debate_rounds"] = 1  # Increase debate rounds
+    #config["backend_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    # Configure data vendors (default uses yfinance and Alpha Vantage)
+    config["data_vendors"] = {
+        "core_stock_apis": "alpha_vantage",           # Options: yfinance, alpha_vantage, local
+        "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
+        "fundamental_data": "google",     # Options: openai, alpha_vantage, local
+        "news_data": "google",            # Options: openai, alpha_vantage, google, local
+    }
+
     # If find_candidates flag is set, generate candidates and exit
-    if args.find_candidates:
+    if args.test:
+        set_config(config)
+        #data = get_fundamentals_google('AAPL', '2024-06-01')
+        data = get_google_news_AI('Apple news', '2026-01-01', 7)
+        print(data)
+    elif args.find_candidates:
         stocks_df = find_stock_candidates()
         print("Generated Stock Candidates:")
         print(stocks_df)
@@ -239,21 +259,6 @@ if __name__ == "__main__":
         plot_df = stocks_df.dropna(subset=['Revenue Growth %', 'P/E Ratio'])
         plot_stock_analysis(plot_df)
     else:    
-        # Create a custom config
-        config = DEFAULT_CONFIG.copy()
-        config["llm_provider"] = "google"
-        config["deep_think_llm"] = "gemini-3-pro-preview"  # Use a different model
-        config["quick_think_llm"] = "gemini-2.5-flash"  # Use a different model
-        config["max_debate_rounds"] = 1  # Increase debate rounds
-        config["backend_url"] = ""
-
-        # Configure data vendors (default uses yfinance and Alpha Vantage)
-        config["data_vendors"] = {
-            "core_stock_apis": "yfinance",           # Options: yfinance, alpha_vantage, local
-            "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
-            "fundamental_data": "google",     # Options: openai, alpha_vantage, local
-            "news_data": "google",            # Options: openai, alpha_vantage, google, local
-        }
 
         # Initialize with custom config
         ta = TradingAgentsGraph(debug=True, config=config)
