@@ -46,6 +46,67 @@ def get_YFin_data_online(
 
     return header + csv_string
 
+
+def get_fundamentals(
+    ticker: Annotated[str, "ticker symbol of the company"],
+    curr_date: Annotated[str, "current date (not used for yfinance)"] = None,
+):
+    """Get company fundamentals data from yfinance."""
+    try:
+        ticker_obj = yf.Ticker(ticker.upper())
+        info = ticker_obj.info or {}
+
+        if not info:
+            return f"No fundamentals data found for symbol '{ticker}'"
+
+        # Map common fundamentals fields to human-friendly names
+        fields = {
+            "shortName": "Company Name",
+            "sector": "Sector",
+            "industry": "Industry",
+            "country": "Country",
+            "marketCap": "Market Cap",
+            "enterpriseValue": "Enterprise Value",
+            "trailingPE": "Trailing P/E",
+            "forwardPE": "Forward P/E",
+            "pegRatio": "PEG Ratio",
+            "priceToBook": "Price to Book",
+            "beta": "Beta",
+            "dividendYield": "Dividend Yield",
+            "payoutRatio": "Payout Ratio",
+            "totalRevenue": "Total Revenue",
+            "revenueGrowth": "Revenue Growth",
+            "grossMargins": "Gross Margins",
+            "operatingMargins": "Operating Margins",
+            "profitMargins": "Profit Margins",
+            "ebitda": "EBITDA",
+            "freeCashflow": "Free Cash Flow",
+            "totalCash": "Total Cash",
+            "totalDebt": "Total Debt",
+            "currentRatio": "Current Ratio",
+            "quickRatio": "Quick Ratio",
+            "returnOnAssets": "Return on Assets",
+            "returnOnEquity": "Return on Equity",
+            "trailingEps": "Trailing EPS",
+            "forwardEps": "Forward EPS",
+        }
+
+        # Build a simple CSV output
+        rows = ["Metric,Value"]
+        for key, label in fields.items():
+            value = info.get(key, "N/A")
+            rows.append(f"{label},{value}")
+
+        csv_string = "\n".join(rows) + "\n"
+
+        header = f"# Fundamentals data for {ticker.upper()}\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+
+        return header + csv_string
+
+    except Exception as e:
+        return f"Error retrieving fundamentals for {ticker}: {str(e)}"
+
 def get_stock_stats_indicators_window(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to get the analysis and report of"],

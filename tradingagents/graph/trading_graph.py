@@ -141,7 +141,7 @@ class TradingAgentsGraph:
                 [
                     # News and insider information
                     get_news,
-                    #get_global_news,
+                    get_global_news,
                     get_insider_sentiment,
                     get_insider_transactions,
                 ]

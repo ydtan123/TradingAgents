@@ -140,6 +140,7 @@ def select_shallow_thinking_agent(provider) -> str:
             ("Claude Sonnet 4 - High performance and excellent reasoning", "claude-sonnet-4-0"),
         ],
         "google": [
+            ("Gemini 3 Flash Preview - Optimized for speed and low-latency while maintaining PhD-level reasoning.", "gemini-3-flash-preview"),
             ("Gemini 2.5 Flash - Adaptive thinking, cost efficiency", "gemini-2.5-flash"),
             ("Gemini 2.0 Flash-Lite - Cost efficiency and low latency", "gemini-2.0-flash-lite"),
             ("Gemini 2.0 Flash - Next generation features, speed, and thinking", "gemini-2.0-flash"),
@@ -202,6 +203,7 @@ def select_deep_thinking_agent(provider) -> str:
             ("Claude Opus 4 - Most powerful Anthropic model", "	claude-opus-4-0"),
         ],
         "google": [
+            ("Gemini 3 Pro Preview - The high-reasoning flagship. Best for complex software engineering challenges, scientific research, and deep data analysis.", "gemini-3-pro-preview"),
             ("Gemini 2.5 Pro", "gemini-2.5-flash"),
             ("Gemini 2.0 Flash-Lite - Cost efficiency and low latency", "gemini-2.0-flash-lite"),
             ("Gemini 2.0 Flash - Next generation features, speed, and thinking", "gemini-2.0-flash"),
@@ -243,9 +245,9 @@ def select_llm_provider() -> tuple[str, str]:
     """Select the OpenAI api url using interactive selection."""
     # Define OpenAI api options with their corresponding endpoints
     BASE_URLS = [
+        ("Google", "https://generativelanguage.googleapis.com/v1"),
         ("OpenAI", "https://api.openai.com/v1"),
         ("Anthropic", "https://api.anthropic.com/"),
-        ("Google", "https://generativelanguage.googleapis.com/v1"),
         ("Openrouter", "https://openrouter.ai/api/v1"),
         ("Ollama", "http://localhost:11434/v1"),        
     ]

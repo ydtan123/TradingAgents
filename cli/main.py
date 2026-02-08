@@ -739,6 +739,139 @@ def extract_content_string(content):
     else:
         return str(content)
 
+def run_analysis_non_interactive(
+    ticker: str,
+    analysis_date: str,
+    analysts: list,
+    research_depth: int,
+    llm_provider: str,
+    backend_url: str,
+    shallow_thinker: str,
+    deep_thinker: str,
+):
+    """
+    Run analysis non-interactively without display updates.
+    
+    Args:
+        ticker: Stock ticker symbol
+        analysis_date: Analysis date in YYYY-MM-DD format
+        analysts: List of analyst types to use
+        research_depth: Research depth level (debate rounds)
+        llm_provider: LLM provider name
+        backend_url: Backend URL for the LLM provider
+        shallow_thinker: Model name for shallow thinking
+        deep_thinker: Model name for deep thinking
+    """
+    # Create config with provided parameters
+    config = DEFAULT_CONFIG.copy()
+    config["max_debate_rounds"] = research_depth
+    config["max_risk_discuss_rounds"] = research_depth
+    config["quick_think_llm"] = shallow_thinker
+    config["deep_think_llm"] = deep_thinker
+    config["backend_url"] = backend_url
+    config["llm_provider"] = llm_provider.lower()
+
+    # Configure data vendors
+    config["data_vendors"] = {
+        "core_stock_apis": "alpha_vantage",
+        "technical_indicators": "yfinance",
+        "fundamental_data": "alpha_vantage",
+        "news_data": "google",
+    }
+
+    # Initialize the graph
+    graph = TradingAgentsGraph(analysts, config=config, debug=True)
+
+    # Create result directory
+    results_dir = Path(config["results_dir"]) / ticker / analysis_date
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report_dir = results_dir / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    log_file = results_dir / "message_tool.log"
+    log_file.touch(exist_ok=True)
+
+    # Create a simple buffer for collecting results
+    analysis_results = {
+        "messages": [],
+        "tool_calls": [],
+        "reports": {}
+    }
+
+    # Initialize state and get graph args
+    init_agent_state = graph.propagator.create_initial_state(ticker, analysis_date)
+    args = graph.propagator.get_graph_args()
+
+    console.print(f"[cyan]Analyzing {ticker} on {analysis_date}...[/cyan]")
+
+    # Stream the analysis
+    trace = []
+    for chunk in graph.graph.stream(init_agent_state, **args):
+        if len(chunk["messages"]) > 0:
+            # Get the last message from the chunk
+            last_message = chunk["messages"][-1]
+
+            # Extract message content and type
+            if hasattr(last_message, "content"):
+                content = extract_content_string(last_message.content)
+                msg_type = "Reasoning"
+            else:
+                content = str(last_message)
+                msg_type = "System"
+
+            # Log message
+            analysis_results["messages"].append((msg_type, content))
+            with open(log_file, "a") as f:
+                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                content_clean = content.replace("\n", " ")
+                f.write(f"{timestamp} [{msg_type}] {content_clean}\n")
+
+            # If it's a tool call, log it
+            if hasattr(last_message, "tool_calls"):
+                for tool_call in last_message.tool_calls:
+                    if isinstance(tool_call, dict):
+                        tool_name = tool_call["name"]
+                        tool_args = tool_call["args"]
+                    else:
+                        tool_name = tool_call.name
+                        tool_args = tool_call.args
+                    
+                    analysis_results["tool_calls"].append((tool_name, tool_args))
+                    with open(log_file, "a") as f:
+                        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                        args_str = ", ".join(f"{k}={v}" for k, v in (tool_args.items() if isinstance(tool_args, dict) else []))
+                        f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
+
+            # Save report sections to files
+            report_sections = [
+                "market_report", "sentiment_report", "news_report",
+                "fundamentals_report", "investment_plan", "trader_investment_plan",
+                "final_trade_decision"
+            ]
+            for section in report_sections:
+                if section in chunk and chunk[section]:
+                    analysis_results["reports"][section] = chunk[section]
+                    file_name = f"{section}.md"
+                    with open(report_dir / file_name, "w") as f:
+                        f.write(extract_content_string(chunk[section]))
+
+        trace.append(chunk)
+
+    # Get final state
+    final_state = trace[-1]
+    decision = graph.process_signal(final_state.get("final_trade_decision", ""))
+
+    console.print(f"[green]Analysis completed![/green]")
+    console.print(f"[cyan]Results saved to: {results_dir}[/cyan]")
+    
+    return {
+        "ticker": ticker,
+        "analysis_date": analysis_date,
+        "decision": decision,
+        "results_dir": str(results_dir),
+        "final_state": final_state,
+    }
+
+
 def run_analysis(ticker: Optional[str] = None):
     # First get all user selections
     selections = get_user_selections(ticker)
@@ -751,6 +884,14 @@ def run_analysis(ticker: Optional[str] = None):
     config["deep_think_llm"] = selections["deep_thinker"]
     config["backend_url"] = selections["backend_url"]
     config["llm_provider"] = selections["llm_provider"].lower()
+
+    # Configure data vendors (default uses yfinance and Alpha Vantage)
+    config["data_vendors"] = {
+        "core_stock_apis": "alpha_vantage",           # Options: yfinance, alpha_vantage, local
+        "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
+        "fundamental_data": "alpha_vantage",     # Options: openai, alpha_vantage, local
+        "news_data": "google",            # Options: openai, alpha_vantage, google, local
+    }
 
     # Initialize the graph
     graph = TradingAgentsGraph(
@@ -1106,10 +1247,61 @@ def run_analysis(ticker: Optional[str] = None):
 
 @app.command()
 def analyze(
-    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Stock ticker symbol to analyze (e.g., SPY, AAPL)")
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Stock ticker symbol to analyze (e.g., SPY, AAPL)"),
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="Run in interactive mode with prompts"),
+    analysis_date: Optional[str] = typer.Option(None, "--date", "-d", help="Analysis date in YYYY-MM-DD format (non-interactive mode)"),
+    research_depth: int = typer.Option(1, "--depth", help="Research depth level for debate rounds (non-interactive mode)"),
+    llm_provider: str = typer.Option("google", "--provider", "-p", help="LLM provider (non-interactive mode)"),
+    backend_url: str = typer.Option("", "--backend-url", "-b", help="Backend URL for LLM provider (non-interactive mode)"),
+    shallow_thinker: str = typer.Option("gemini-3-flash-preview", "--shallow", help="Shallow thinking model (non-interactive mode)"),
+    deep_thinker: str = typer.Option("gemini-3-pro-preview", "--deep", help="Deep thinking model (non-interactive mode)"),
+    market: bool = typer.Option(True, "--market/--no-market", help="Include market analyst (non-interactive mode)"),
+    social: bool = typer.Option(True, "--social/--no-social", help="Include social analyst (non-interactive mode)"),
+    news: bool = typer.Option(True, "--news/--no-news", help="Include news analyst (non-interactive mode)"),
+    fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include fundamentals analyst (non-interactive mode)"),
 ):
     """Run trading analysis on a stock ticker."""
-    run_analysis(ticker)
+    if interactive:
+        # Interactive mode
+        run_analysis(ticker)
+    else:
+        # Non-interactive mode
+        if not ticker:
+            console.print("[red]Error: --ticker is required for non-interactive mode[/red]")
+            raise typer.Exit(1)
+        
+        # Set default date if not provided
+        if not analysis_date:
+            analysis_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # Build analysts list based on flags
+        analysts = []
+        if market:
+            analysts.append("market")
+        if social:
+            analysts.append("social")
+        if news:
+            analysts.append("news")
+        if fundamentals:
+            analysts.append("fundamentals")
+        
+        if not analysts:
+            console.print("[red]Error: At least one analyst must be enabled[/red]")
+            raise typer.Exit(1)
+        
+        # Run non-interactive analysis
+        result = run_analysis_non_interactive(
+            ticker=ticker.upper(),
+            analysis_date=analysis_date,
+            analysts=analysts,
+            research_depth=research_depth,
+            llm_provider=llm_provider,
+            backend_url=backend_url,
+            shallow_thinker=shallow_thinker,
+            deep_thinker=deep_thinker,
+        )
+        
+        console.print(f"[green]Decision: {result['decision']}[/green]")
 
 
 if __name__ == "__main__":

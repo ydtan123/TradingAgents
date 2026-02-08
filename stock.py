@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 import argparse
+import logging
 from datetime import datetime
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
-from prompts import STOCK_LIST
+from prompts import STOCK_LIST, system_instruction
 from google import genai
 import pandas as pd
 from io import StringIO
-from tradingagents.dataflows.config import get_config
-from tradingagents.dataflows.google import get_fundamentals_google, get_google_news_AI
-from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.config import get_config, set_config
+from tradingagents.dataflows.google import get_fundamentals_google, get_google_news, get_global_news_google
+from tradingagents.dataflows.openai import get_global_news_openai
+from tradingagents.dataflows.local import get_reddit_global_news
+from tradingagents.dataflows.alpha_vantage import get_news as get_alpha_vantage_news
+from tradingagents.dataflows.alpha_vantage import get_fundamentals as get_alpha_vantage_fundamentals
+from tradingagents.dataflows.alpha_vantage import get_income_statement
 
 import os
 import matplotlib.pyplot as plt
@@ -19,27 +24,42 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def find_stock_candidates():
-    config = get_config()
+    """
+    Find stock candidates based on predefined criteria using Google Gemini API.
     
-    # Configure Google Generative AI
+    Returns:
+        DataFrame containing stock candidates
+    """
+    # Use the STOCK_LIST prompt to get stock candidates
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
-    
-    #genai.configure(api_key=api_key)
-    #model = genai.GenerativeModel('gemini-3-pro-preview')
-    full_prompt = STOCK_LIST
+    config = get_config()
+    tools = [
+        genai.types.Tool(
+            google_search={} # This replaces google_search_retrieval
+        )
+    ]
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model="gemini-3-pro-preview",
-        contents=full_prompt)
-
-    # Convert the CSV-formatted string to a pandas DataFrame
-    df = pd.read_csv(StringIO(response.text))
+        model="gemini-3-flash-preview",
+        config=genai.types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            tools=tools, # Pass the corrected tool list here
+            temperature=0.0
+        ),
+        contents=STOCK_LIST
+    )
+    try:
+        # Extract text from the response using the correct accessor
+        response_text = response.candidates[0].content.parts[0].text
+        # Convert the CSV-formatted string to a pandas DataFrame
+        df = pd.read_csv(StringIO(response_text))
+    except Exception as e:
+        raise ValueError(f"Failed to parse stock candidates CSV: {e} {response.text}")
     
     # Remove leading and trailing whitespaces from column names
     df.columns = df.columns.str.strip()
-
     return df
 
 
@@ -47,7 +67,7 @@ def plot_stock_analysis(stocks_df):
 
     # Create visualization: Revenue Growth vs P/E Ratio
     # Remove any rows with missing data
-    
+    plot_df = stocks_df.dropna(subset=['P/E Ratio', 'Revenue Growth %'])
     # Create the scatter plot
     fig, ax = plt.subplots(figsize=(14, 10))
     scatter = ax.scatter(plot_df['P/E Ratio'], 
@@ -123,88 +143,7 @@ def analyze_stock_with_llm(ta, ticker, curr_date):
     
     # forward propagate
     _, decision = ta.propagate(ticker.upper(), curr_date)
-    print(f"Final Decision for {ticker.upper()} on {curr_date}: {decision}")
     return decision
-
-list_of_stocks = [
-('ARW', 'Arrow Electronics, Inc.'),
-('AVT', 'Avnet, Inc.'),
-('AMKR', 'Amkor Technology, Inc.'),
-('VSH', 'Vishay Intertechnology, Inc.'),
-('HPE', 'Hewlett Packard Enterprise Company'),
-('DXC', 'DXC Technology Company'),
-('SANM', 'Sanmina Corporation'),
-('CNXC', 'Concentrix Corporation'),
-('BWA', 'BorgWarner Inc.'),
-('LKQ', 'LKQ Corporation'),
-('LAD', 'Lithia & Driveway'),
-('PAG', 'Penske Automotive Group, Inc.'),
-('PVH', 'PVH Corp.'),
-('URBN', 'Urban Outfitters, Inc.'),
-('KBH', 'KB Home'),
-('TOL', 'Toll Brothers, Inc.'),
-('TMHC', 'Taylor Morrison Home Corporation'),
-('PHM', 'PulteGroup, Inc.'),
-('AGCO', 'AGCO Corporation'),
-('OSK', 'Oshkosh Corporation'),
-('HII', 'Huntington Ingalls Industries, Inc.'),
-('TKR', 'The Timken Company'),
-('OC', 'Owens Corning'),
-('TXT', 'Textron Inc.'),
-('ALK', 'Alaska Air Group, Inc.'),
-('UAL', 'United Airlines Holdings, Inc.'),
-('DAL', 'Delta Air Lines, Inc.'),
-('CNC', 'Centene Corporation'),
-('UTHR', 'United Therapeutics Corporation'),
-('UHS', 'Universal Health Services, Inc.')
-]
-"""
-   Ticker                Company Name  Revenue Growth %  P/E Ratio  Market Cap
-0    SMCI   Super Micro Computer Inc.             143.0       25.4       28500
-1     TDW              Tidewater Inc.              45.2       15.8        4800
-2     APP        AppLovin Corporation              42.5       48.2       48000
-3    POWL      Powell Industries Inc.              40.1       19.5        2100
-4     NXT             Nextracker Inc.              35.4       28.1        7500
-5     FIX    Comfort Systems USA Inc.              32.1       36.5       13200
-6    FSLR            First Solar Inc.              27.3       18.2       22500
-7     ANF     Abercrombie & Fitch Co.              22.1       18.4        8500
-8    META         Meta Platforms Inc.              22.1       26.5     1250000
-9    OSIS            OSI Systems Inc.              21.8       29.1        2300
-10   DECK       Deckers Outdoor Corp.              20.3       29.4       23500
-11   LNTH      Lantheus Holdings Inc.              20.1       19.2        7200
-12   BRBR        BellRing Brands Inc.              19.5       34.1        7600
-13   TTEK             Tetra Tech Inc.              19.2       39.5       13500
-14    EME            EMCOR Group Inc.              18.4       26.8       18200
-15    PWR        Quanta Services Inc.              17.5       42.1       40500
-16   MEDP       Medpace Holdings Inc.              17.1       38.5       12100
-17   BKNG       Booking Holdings Inc.              16.2       28.4      130000
-18   ANET        Arista Networks Inc.              16.1       42.3       95000
-19    HWM       Howmet Aerospace Inc.              15.4       39.2       33000
-20  GOOGL               Alphabet Inc.              15.3       23.5     2100000
-21    MOD    Modine Manufacturing Co.              15.1       24.2        6100
-22    XYL                  Xylem Inc.              14.5       38.1       33500
-23    THC      Tenet Healthcare Corp.              14.2       15.1       13800
-24    VRT          Vertiv Holdings Co              13.5       41.2       35000
-25   AMZN             Amazon.com Inc.              13.1       40.5     1900000
-26     DY       Dycom Industries Inc.              10.5       25.4        5200
-27    BLD              TopBuild Corp.               6.2       19.8       11500
-28    PHM             PulteGroup Inc.               6.1        9.8       27000
-29   GDDY                GoDaddy Inc.               5.9       19.5       19500
-"""
-"""
-Best Opportunities (High Growth, Low P/E):
-   Ticker                Company Name  Revenue Growth %  P/E Ratio  Market Cap
-0    SMCI   Super Micro Computer Inc.             143.0       25.4       28500
-1     TDW              Tidewater Inc.              45.2       15.8        4800
-3    POWL      Powell Industries Inc.              40.1       19.5        2100
-6    FSLR            First Solar Inc.              27.3       18.2       22500
-7     ANF     Abercrombie & Fitch Co.              22.1       18.4        8500
-8    META         Meta Platforms Inc.              22.1       26.5     1250000
-11   LNTH      Lantheus Holdings Inc.              20.1       19.2        7200
-14    EME            EMCOR Group Inc.              18.4       26.8       18200
-"""
-
-"""BUY: ANET, VRT, FSLR"""
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -217,7 +156,36 @@ if __name__ == "__main__":
                         help='Find stock candidates first using LLM before analysis')
     parser.add_argument('--test', action='store_true',
                         help='Run in test mode with mock data')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Enable verbose logging (DEBUG level)')
+    parser.add_argument('--list-models', action='store_true',
+                        help='List available Gemini models and exit')
+    
     args = parser.parse_args()
+    
+    # Handle list-models flag
+    if args.list_models:
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("Error: GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
+            exit(1)
+        client = genai.Client(api_key=api_key)
+        print("Available Gemini Models:")
+        print("-" * 50)
+        for model in client.models.list():
+            print(f"Model ID: {model.name}")
+            if 'embedContent' in model.supported_actions:
+                print(f"Compatible Model: {model.name}")
+        exit(0)
+    
+    # Configure logging level based on verbose flag
+    # Only configure tradingagents logger, don't affect other libraries
+    tradingagents_logger = logging.getLogger("tradingagents")
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(filename)s:%(lineno)d - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    tradingagents_logger.addHandler(handler)
+    tradingagents_logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
     
     # Create a custom config
     config = DEFAULT_CONFIG.copy()
@@ -239,16 +207,21 @@ if __name__ == "__main__":
     config["data_vendors"] = {
         "core_stock_apis": "alpha_vantage",           # Options: yfinance, alpha_vantage, local
         "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
-        "fundamental_data": "google",     # Options: openai, alpha_vantage, local
+        "fundamental_data": "alpha_vantage",     # Options: openai, alpha_vantage, local
         "news_data": "google",            # Options: openai, alpha_vantage, google, local
     }
 
     # If find_candidates flag is set, generate candidates and exit
     if args.test:
         set_config(config)
-        #data = get_fundamentals_google('AAPL', '2024-06-01')
-        data = get_google_news_AI('Apple news', '2026-01-01', 7)
+        #data = get_fundamentals_google('AAPL', '2026-01-01')
+        #data = get_global_news_google('2026-01-31', 7)
+        #data = get_google_news('AMZN', '2026-01-31', '2026-02-07')
+        #data = get_alpha_vantage_news('AMZN', '2026-01-31', '2026-02-07')
+        #data = get_alpha_vantage_fundamentals('AAPL', '2026-01-01')
+        data = get_income_statement('AAPL')
         print(data)
+        
     elif args.find_candidates:
         stocks_df = find_stock_candidates()
         print("Generated Stock Candidates:")
@@ -261,7 +234,7 @@ if __name__ == "__main__":
     else:    
 
         # Initialize with custom config
-        ta = TradingAgentsGraph(debug=True, config=config)
+        ta = TradingAgentsGraph(debug=args.verbose, config=config)
         #selected_analysts=['social'],
 
         if args.ticker == "":

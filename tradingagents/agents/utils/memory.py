@@ -16,7 +16,9 @@ class FinancialSituationMemory:
             # Use Google's embeddings API
             try:
                 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-                self.embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+                #self.embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+                self.embeddings_model = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
+                
                 self.client = None
             except ImportError:
                 # Fallback to text-embedding-3-small

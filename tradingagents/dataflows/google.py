@@ -3,43 +3,60 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from .googlenews_utils import getNewsData
 from google import genai
+from google.genai import types
 import os
 from .config import get_config
 
+def search_google_news(prompt: str):
+    """
+    Search Google News using Gemini API with web search tool.
+    
+    Args:
+        prompt: The search prompt string.
+        
+    Returns:
+        The text response from the Gemini API.
+    """
+    # Configure Google Generative AI
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
+    
+    client = genai.Client(api_key=api_key)
+    tools = [
+        types.Tool(
+            google_search={} # This replaces google_search_retrieval
+        )
+    ]
+    system_instruction = """## Persona
+You are a Senior Equity Research Analyst with 20 years of experience at a Tier-1 investment bank.
+Your goal is to provide objective, data-driven, and high-fidelity financial analysis.
+"""
+    response = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            tools=tools
+        ),
+        contents=prompt
+    )
+    return response.text
 
 def get_google_news(
     query: Annotated[str, "Query to search with"],
-    curr_date: Annotated[str, "Curr date in yyyy-mm-dd format"],
-    look_back_days: Annotated[int, "how many days to look back"],
+    start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
+    end_date: Annotated[str, "End date in yyyy-mm-dd format"]
 ) -> str:
-    #import ipdb; ipdb.set_trace()
-    # Ensure query is a string and normalize spaces for URL searches
-    query = str(query).replace(" ", "+")
+    start_date_str = datetime.strptime(start_date, "%Y-%m-%d")
+    end_date_str = datetime.strptime(end_date, "%Y-%m-%d")
+    prompt = f"Search google to collect financial news for {query} from {start_date_str} to {end_date_str}"
+    response = search_google_news(prompt)
+    return response
 
-    start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before = before.strftime("%Y-%m-%d")
-
-    news_results = getNewsData(query, before, curr_date)
-
-    news_str = ""
-
-    for news in news_results:
-        print(f"**********{news}")
-        news_str += (
-            f"### {news['title']} (source: {news['source']}) \n\n{news['snippet']}\n\n"
-        )
-
-    if len(news_results) == 0:
-        return "No news found."
-
-    return f"## {query} Google News, from {before} to {curr_date}:\n\n{news_str}"
-
-
-def get_google_news_AI(
-    query: Annotated[str, "Query to search with"],
+def get_global_news_google(
     curr_date: Annotated[str, "Curr date in yyyy-mm-dd format"],
-    look_back_days: Annotated[int, "how many days to look back"]
+    look_back_days: Annotated[int, "how many days to look back"] = 7,
+    limit: Annotated[int, "limit number of articles"] = 5
     ) -> str:
     """
     Get news using Google's Gemini API with web search.
@@ -54,24 +71,33 @@ def get_google_news_AI(
         raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
     
     # Calculate date range (three months before to current date)
-    start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(days=look_back_days)
-    before_str = before.strftime("%Y-%m-%d")
+    curr_date_str = datetime.strptime(curr_date, "%Y-%m-%d")
     
-    # Create the prompt
-    prompt = f"""Can you search for news and discussions from google news and reddit on {query} from {before_str} to {curr_date}? 
-Make sure you only get the data posted during that period.
-
-Format the response as markdown with clear sections.
-Search the web to get the most recent and accurate data.
+    client = genai.Client(api_key=api_key)
+    tools = [
+        types.Tool(
+            google_search={} # This replaces google_search_retrieval
+        )
+    ]
+    system_instruction = """## Persona
+You are a Senior Equity Research Analyst with 20 years of experience at a Tier-1 investment bank.
+Your goal is to provide objective, data-driven, and high-fidelity financial analysis.
 """
     
-    # Generate content with web search
-    config = get_config()
-    client = genai.Client(api_key=api_key)
+    prompt =  f"""Can you search global or macroeconomics news from {look_back_days} days 
+    before {curr_date_str} to {curr_date_str} that would be informative for trading purposes? 
+    Make sure you only get the data posted during that period. Limit the results to {limit} 
+    articles."""
+
     response = client.models.generate_content(
-        model=config.get("quick_think_llm", "gemini-2.5-flash"),
-        contents=prompt)
+        model="gemini-3-flash-preview",
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            tools=tools, # Pass the corrected tool list here
+            temperature=0.0
+        ),
+        contents=prompt
+    )
     
     return response.text
 
@@ -95,7 +121,7 @@ def get_fundamentals_google(ticker, curr_date):
     
     # Calculate date range (three months before to current date)
     start_date = datetime.strptime(curr_date, "%Y-%m-%d")
-    before = start_date - relativedelta(months=3)
+    before = start_date - relativedelta(months=6)
     before_str = before.strftime("%Y-%m-%d")
     
     # Create the prompt
