@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "alpaca-py>=0.31.0",
     "akshare>=1.16.98",
     "backtrader>=1.9.78.123",
     "chainlit>=2.5.5",

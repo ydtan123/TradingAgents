@@ -26,6 +26,7 @@ from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.agents.trader.alpaca_trader import AlpacaTrader
 from cli.models import AnalystType
 from cli.utils import *
 
@@ -488,6 +489,21 @@ def get_user_selections(ticker: Optional[str] = None):
     selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
     selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
 
+    # Step 7: Optional Alpaca trade execution
+    console.print(
+        create_question_box(
+            "Step 7: Trade Execution",
+            "Execute Alpaca trades based on the final decision",
+            "No",
+        )
+    )
+    execute_trades = typer.confirm("", default=False)
+    trade_shares = 1
+    dry_run_trades = False
+    if execute_trades:
+        trade_shares = typer.prompt("Number of shares to trade", default=1, type=int)
+        dry_run_trades = typer.confirm("Dry run (log order without submitting)", default=False)
+
     return {
         "ticker": selected_ticker,
         "analysis_date": analysis_date,
@@ -497,6 +513,9 @@ def get_user_selections(ticker: Optional[str] = None):
         "backend_url": backend_url,
         "shallow_thinker": selected_shallow_thinker,
         "deep_thinker": selected_deep_thinker,
+        "execute_trades": execute_trades,
+        "trade_shares": trade_shares,
+        "dry_run_trades": dry_run_trades,
     }
 
 
@@ -739,6 +758,52 @@ def extract_content_string(content):
     else:
         return str(content)
 
+
+def execute_alpaca_trade(decision: str, ticker: str, shares: int, dry_run: bool = False):
+    normalized = decision.strip().upper()
+    if shares <= 0:
+        console.print("[red]Trade shares must be greater than zero.[/red]")
+        return None
+
+    if "BUY" in normalized:
+        action = "BUY"
+    elif "SELL" in normalized:
+        action = "SELL"
+    else:
+        console.print(
+            f"[yellow]No trade executed (decision: {normalized or 'HOLD'}).[/yellow]"
+        )
+        return None
+
+    order_payload = {
+        "symbol": ticker,
+        "qty": shares,
+        "side": action,
+        "type": "market",
+        "time_in_force": "day",
+    }
+
+    if dry_run:
+        console.print(f"[yellow]Dry run order payload: {order_payload}[/yellow]")
+        return order_payload
+
+    try:
+        trader = AlpacaTrader()
+        if action == "BUY":
+            order = trader.buy(ticker, shares)
+        else:
+            order = trader.sell(ticker, shares)
+
+        order_id = getattr(order, "id", None) or getattr(order, "order_id", None)
+        if order_id:
+            console.print(f"[green]Alpaca order submitted: {action} {shares} {ticker} (ID: {order_id})[/green]")
+        else:
+            console.print(f"[green]Alpaca order submitted: {action} {shares} {ticker}[/green]")
+        return order
+    except Exception as exc:
+        console.print(f"[red]Failed to submit Alpaca order: {exc}[/red]")
+        return None
+
 def run_analysis_non_interactive(
     ticker: str,
     analysis_date: str,
@@ -748,6 +813,9 @@ def run_analysis_non_interactive(
     backend_url: str,
     shallow_thinker: str,
     deep_thinker: str,
+    execute_trades: bool = False,
+    trade_shares: int = 1,
+    dry_run_trades: bool = False,
 ):
     """
     Run analysis non-interactively without display updates.
@@ -783,7 +851,8 @@ def run_analysis_non_interactive(
     graph = TradingAgentsGraph(analysts, config=config, debug=True)
 
     # Create result directory
-    results_dir = Path(config["results_dir"]) / ticker / analysis_date
+    current_time = datetime.datetime.now().strftime("%H%M%S")
+    results_dir = Path(config["results_dir"]) / ticker / analysis_date / current_time
     results_dir.mkdir(parents=True, exist_ok=True)
     report_dir = results_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -860,6 +929,9 @@ def run_analysis_non_interactive(
     final_state = trace[-1]
     decision = graph.process_signal(final_state.get("final_trade_decision", ""))
 
+    if execute_trades:
+        execute_alpaca_trade(decision, ticker, trade_shares, dry_run=dry_run_trades)
+
     console.print(f"[green]Analysis completed![/green]")
     console.print(f"[cyan]Results saved to: {results_dir}[/cyan]")
     
@@ -899,7 +971,8 @@ def run_analysis(ticker: Optional[str] = None):
     )
 
     # Create result directory
-    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
+    current_time = datetime.datetime.now().strftime("%H%M%S")
+    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"] / current_time
     results_dir.mkdir(parents=True, exist_ok=True)
     report_dir = results_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -1226,6 +1299,14 @@ def run_analysis(ticker: Optional[str] = None):
         final_state = trace[-1]
         decision = graph.process_signal(final_state["final_trade_decision"])
 
+        if selections.get("execute_trades"):
+            execute_alpaca_trade(
+                decision,
+                selections["ticker"],
+                selections["trade_shares"],
+                dry_run=selections.get("dry_run_trades", False),
+            )
+
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
             message_buffer.update_agent_status(agent, "completed")
@@ -1259,6 +1340,9 @@ def analyze(
     social: bool = typer.Option(True, "--social/--no-social", help="Include social analyst (non-interactive mode)"),
     news: bool = typer.Option(True, "--news/--no-news", help="Include news analyst (non-interactive mode)"),
     fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include fundamentals analyst (non-interactive mode)"),
+    execute_trades: bool = typer.Option(False, "--execute-trades/--no-execute-trades", help="Execute Alpaca trades based on the final decision"),
+    shares: int = typer.Option(1, "--shares", help="Number of shares to trade when executing orders"),
+    dry_run_trades: bool = typer.Option(False, "--dry-run/--no-dry-run", help="Log Alpaca order payload without submitting"),
 ):
     """Run trading analysis on a stock ticker."""
     if interactive:
@@ -1299,6 +1383,9 @@ def analyze(
             backend_url=backend_url,
             shallow_thinker=shallow_thinker,
             deep_thinker=deep_thinker,
+            execute_trades=execute_trades,
+            trade_shares=shares,
+            dry_run_trades=dry_run_trades,
         )
         
         console.print(f"[green]Decision: {result['decision']}[/green]")

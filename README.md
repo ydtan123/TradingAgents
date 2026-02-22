@@ -204,6 +204,26 @@ print(decision)
 
 You can view the full list of configurations in `tradingagents/default_config.py`.
 
+### Alpaca Trading (Optional)
+
+If you want to place real trades, configure Alpaca credentials and use the Alpaca helper class:
+
+```bash
+export ALPACA_API_KEY=$YOUR_ALPACA_API_KEY
+export ALPACA_API_SECRET=$YOUR_ALPACA_API_SECRET
+export ALPACA_PAPER=true
+# Optional override if you use a custom endpoint
+# export ALPACA_BASE_URL=https://paper-api.alpaca.markets
+```
+
+```python
+from tradingagents.agents.trader.alpaca_trader import AlpacaTrader
+
+trader = AlpacaTrader()
+trader.buy("AAPL", 5)
+trader.sell("AAPL", 2)
+```
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
