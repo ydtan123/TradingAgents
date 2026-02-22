@@ -220,32 +220,24 @@ print(decision)
 
 See `tradingagents/default_config.py` for all configuration options.
 
-## Persistence and Recovery
+### Alpaca Trading (Optional)
 
-TradingAgents persists two kinds of state across runs.
-
-### Decision log
-
-The decision log is always on. Each completed run appends its decision to `~/.tradingagents/memory/trading_memory.md`. On the next run for the same ticker, TradingAgents fetches the realised return (raw and alpha vs SPY), generates a one-paragraph reflection, and injects the most recent same-ticker decisions plus recent cross-ticker lessons into the Portfolio Manager prompt, so each analysis carries forward what worked and what didn't.
-
-Override the path with `TRADINGAGENTS_MEMORY_LOG_PATH`.
-
-### Checkpoint resume
-
-Checkpoint resume is opt-in via `--checkpoint`. When enabled, LangGraph saves state after each node so a crashed or interrupted run resumes from the last successful step instead of starting over. On a resume run you will see `Resuming from step N for <TICKER> on <date>` in the logs; on a new run you will see `Starting fresh`. Checkpoints are cleared automatically on successful completion.
-
-Per-ticker SQLite databases live at `~/.tradingagents/cache/checkpoints/<TICKER>.db` (override the base with `TRADINGAGENTS_CACHE_DIR`). Use `--clear-checkpoints` to reset all of them before a run.
+If you want to place real trades, configure Alpaca credentials and use the Alpaca helper class:
 
 ```bash
-tradingagents analyze --checkpoint           # enable for this run
-tradingagents analyze --clear-checkpoints    # reset before running
+export ALPACA_API_KEY=$YOUR_ALPACA_API_KEY
+export ALPACA_API_SECRET=$YOUR_ALPACA_API_SECRET
+export ALPACA_PAPER=true
+# Optional override if you use a custom endpoint
+# export ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ```
 
 ```python
-config = DEFAULT_CONFIG.copy()
-config["checkpoint_enabled"] = True
-ta = TradingAgentsGraph(config=config)
-_, decision = ta.propagate("NVDA", "2026-01-15")
+from tradingagents.agents.trader.alpaca_trader import AlpacaTrader
+
+trader = AlpacaTrader()
+trader.buy("AAPL", 5)
+trader.sell("AAPL", 2)
 ```
 
 ## Contributing
