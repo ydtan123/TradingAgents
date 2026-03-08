@@ -27,6 +27,8 @@ from rich.rule import Rule
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.trader.alpaca_trader import AlpacaTrader
+from tradingagents.common import setup_tradingagents_logger
+
 from cli.models import AnalystType
 from cli.utils import *
 
@@ -1343,8 +1345,12 @@ def analyze(
     execute_trades: bool = typer.Option(False, "--execute-trades/--no-execute-trades", help="Execute Alpaca trades based on the final decision"),
     shares: int = typer.Option(1, "--shares", help="Number of shares to trade when executing orders"),
     dry_run_trades: bool = typer.Option(False, "--dry-run/--no-dry-run", help="Log Alpaca order payload without submitting"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging"),
 ):
     """Run trading analysis on a stock ticker."""
+    if verbose:
+        setup_tradingagents_logger(True)
+
     if interactive:
         # Interactive mode
         run_analysis(ticker)
