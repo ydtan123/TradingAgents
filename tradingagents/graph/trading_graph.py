@@ -26,6 +26,7 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
+    get_all_indicators,
     get_fundamentals,
     get_balance_sheet,
     get_cashflow,
@@ -127,8 +128,8 @@ class TradingAgentsGraph:
                 [
                     # Core stock data tools
                     get_stock_data,
-                    # Technical indicators
-                    get_indicators,
+                    # Technical indicators (single call for all indicators)
+                    get_all_indicators,
                 ]
             ),
             "social": ToolNode(
