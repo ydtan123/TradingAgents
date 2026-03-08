@@ -806,7 +806,7 @@ def execute_alpaca_trade(decision: str, ticker: str, shares: int, dry_run: bool 
         console.print(f"[red]Failed to submit Alpaca order: {exc}[/red]")
         return None
 
-def run_analysis_non_interactive(
+def run_analysis(
     ticker: str,
     analysis_date: str,
     analysts: list,
@@ -818,21 +818,12 @@ def run_analysis_non_interactive(
     execute_trades: bool = False,
     trade_shares: int = 1,
     dry_run_trades: bool = False,
+    interactive: bool = False,
 ):
-    """
-    Run analysis non-interactively without display updates.
-    
-    Args:
-        ticker: Stock ticker symbol
-        analysis_date: Analysis date in YYYY-MM-DD format
-        analysts: List of analyst types to use
-        research_depth: Research depth level (debate rounds)
-        llm_provider: LLM provider name
-        backend_url: Backend URL for the LLM provider
-        shallow_thinker: Model name for shallow thinking
-        deep_thinker: Model name for deep thinking
-    """
-    # Create config with provided parameters
+    """Run trading analysis. If interactive=True, shows a live Rich display; otherwise logs to console."""
+    from contextlib import nullcontext
+
+    # Build config
     config = DEFAULT_CONFIG.copy()
     config["max_debate_rounds"] = research_depth
     config["max_risk_discuss_rounds"] = research_depth
@@ -840,8 +831,6 @@ def run_analysis_non_interactive(
     config["deep_think_llm"] = deep_thinker
     config["backend_url"] = backend_url
     config["llm_provider"] = llm_provider.lower()
-
-    # Configure data vendors
     config["data_vendors"] = {
         "core_stock_apis": "alpha_vantage",
         "technical_indicators": "yfinance",
@@ -849,10 +838,10 @@ def run_analysis_non_interactive(
         "news_data": "google",
     }
 
-    # Initialize the graph
+    # Initialize graph
     graph = TradingAgentsGraph(analysts, config=config, debug=True)
 
-    # Create result directory
+    # Create result directories and log file
     current_time = datetime.datetime.now().strftime("%H%M%S")
     results_dir = Path(config["results_dir"]) / ticker / analysis_date / current_time
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -861,82 +850,219 @@ def run_analysis_non_interactive(
     log_file = results_dir / "message_tool.log"
     log_file.touch(exist_ok=True)
 
-    # Create a simple buffer for collecting results
-    analysis_results = {
-        "messages": [],
-        "tool_calls": [],
-        "reports": {}
-    }
+    # ── Interactive-only setup ──────────────────────────────────────────────
+    layout = None
+    if interactive:
+        # Patch MessageBuffer methods to also write to the log file
+        def save_message_decorator(obj, func_name):
+            func = getattr(obj, func_name)
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                func(*args, **kwargs)
+                timestamp, message_type, content = obj.messages[-1]
+                with open(log_file, "a") as f:
+                    f.write(f"{timestamp} [{message_type}] {content.replace(chr(10), ' ')}\n")
+            return wrapper
 
-    # Initialize state and get graph args
-    init_agent_state = graph.propagator.create_initial_state(ticker, analysis_date)
-    args = graph.propagator.get_graph_args()
+        def save_tool_call_decorator(obj, func_name):
+            func = getattr(obj, func_name)
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                func(*args, **kwargs)
+                timestamp, tool_name, args = obj.tool_calls[-1]
+                args_str = ", ".join(f"{k}={v}" for k, v in args.items())
+                with open(log_file, "a") as f:
+                    f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
+            return wrapper
 
-    console.print(f"[cyan]Analyzing {ticker} on {analysis_date}...[/cyan]")
-
-    # Stream the analysis
-    trace = []
-    for chunk in graph.graph.stream(init_agent_state, **args):
-        if len(chunk["messages"]) > 0:
-            # Get the last message from the chunk
-            last_message = chunk["messages"][-1]
-
-            # Extract message content and type
-            if hasattr(last_message, "content"):
-                content = extract_content_string(last_message.content)
-                msg_type = "Reasoning"
-            else:
-                content = str(last_message)
-                msg_type = "System"
-
-            # Log message
-            analysis_results["messages"].append((msg_type, content))
-            with open(log_file, "a") as f:
-                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                content_clean = content.replace("\n", " ")
-                f.write(f"{timestamp} [{msg_type}] {content_clean}\n")
-
-            # If it's a tool call, log it
-            if hasattr(last_message, "tool_calls"):
-                for tool_call in last_message.tool_calls:
-                    if isinstance(tool_call, dict):
-                        tool_name = tool_call["name"]
-                        tool_args = tool_call["args"]
-                    else:
-                        tool_name = tool_call.name
-                        tool_args = tool_call.args
-                    
-                    analysis_results["tool_calls"].append((tool_name, tool_args))
-                    with open(log_file, "a") as f:
-                        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                        args_str = ", ".join(f"{k}={v}" for k, v in (tool_args.items() if isinstance(tool_args, dict) else []))
-                        f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
-
-            # Save report sections to files
-            report_sections = [
-                "market_report", "sentiment_report", "news_report",
-                "fundamentals_report", "investment_plan", "trader_investment_plan",
-                "final_trade_decision"
-            ]
-            for section in report_sections:
-                if section in chunk and chunk[section]:
-                    analysis_results["reports"][section] = chunk[section]
-                    file_name = f"{section}.md"
+        def save_report_section_decorator(obj, func_name):
+            func = getattr(obj, func_name)
+            @wraps(func)
+            def wrapper(section_name, content):
+                func(section_name, content)
+                if section_name in obj.report_sections and obj.report_sections[section_name]:
+                    file_name = f"{section_name}.md"
                     with open(report_dir / file_name, "w") as f:
-                        f.write(extract_content_string(chunk[section]))
+                        f.write(extract_content_string(obj.report_sections[section_name]))
+            return wrapper
 
-        trace.append(chunk)
+        message_buffer.add_message = save_message_decorator(message_buffer, "add_message")
+        message_buffer.add_tool_call = save_tool_call_decorator(message_buffer, "add_tool_call")
+        message_buffer.update_report_section = save_report_section_decorator(message_buffer, "update_report_section")
 
-    # Get final state
-    final_state = trace[-1]
-    decision = graph.process_signal(final_state.get("final_trade_decision", ""))
+        # Reset buffer state
+        for agent in message_buffer.agent_status:
+            message_buffer.update_agent_status(agent, "pending")
+        for section in message_buffer.report_sections:
+            message_buffer.report_sections[section] = None
+        message_buffer.current_report = None
+        message_buffer.final_report = None
 
-    if execute_trades:
-        execute_alpaca_trade(decision, ticker, trade_shares, dry_run=dry_run_trades)
+        layout = create_layout()
+        update_display(layout)
+        message_buffer.add_message("System", f"Selected ticker: {ticker}")
+        message_buffer.add_message("System", f"Analysis date: {analysis_date}")
+        message_buffer.add_message("System", f"Selected analysts: {', '.join(analysts)}")
+        first_analyst = f"{analysts[0].capitalize()} Analyst"
+        message_buffer.update_agent_status(first_analyst, "in_progress")
+        update_display(layout, f"Analyzing {ticker} on {analysis_date}...")
+    else:
+        console.print(f"[cyan]Analyzing {ticker} on {analysis_date}...[/cyan]")
 
-    console.print(f"[green]Analysis completed![/green]")
-    console.print(f"[cyan]Results saved to: {results_dir}[/cyan]")
-    
+    # ── Shared: stream the graph ────────────────────────────────────────────
+    init_agent_state = graph.propagator.create_initial_state(ticker, analysis_date)
+    graph_args = graph.propagator.get_graph_args()
+
+    REPORT_SECTIONS = [
+        "market_report", "sentiment_report", "news_report",
+        "fundamentals_report", "investment_plan", "trader_investment_plan",
+        "final_trade_decision",
+    ]
+
+    trace = []
+    ctx = Live(layout, refresh_per_second=4) if interactive else nullcontext()
+    with ctx:
+        for chunk in graph.graph.stream(init_agent_state, **graph_args):
+            if chunk["messages"]:
+                last_message = chunk["messages"][-1]
+
+                # Extract content
+                if hasattr(last_message, "content"):
+                    content = extract_content_string(last_message.content)
+                    msg_type = "Reasoning"
+                else:
+                    content = str(last_message)
+                    msg_type = "System"
+
+                if interactive:
+                    # Buffer handles live display + file logging via decorators
+                    message_buffer.add_message(msg_type, content)
+                    if hasattr(last_message, "tool_calls"):
+                        for tc in last_message.tool_calls:
+                            if isinstance(tc, dict):
+                                message_buffer.add_tool_call(tc["name"], tc["args"])
+                            else:
+                                message_buffer.add_tool_call(tc.name, tc.args)
+
+                    # Update agent statuses and report sections
+                    if chunk.get("market_report"):
+                        message_buffer.update_report_section("market_report", chunk["market_report"])
+                        message_buffer.update_agent_status("Market Analyst", "completed")
+                        if "social" in analysts:
+                            message_buffer.update_agent_status("Social Analyst", "in_progress")
+
+                    if chunk.get("sentiment_report"):
+                        message_buffer.update_report_section("sentiment_report", chunk["sentiment_report"])
+                        message_buffer.update_agent_status("Social Analyst", "completed")
+                        if "news" in analysts:
+                            message_buffer.update_agent_status("News Analyst", "in_progress")
+
+                    if chunk.get("news_report"):
+                        message_buffer.update_report_section("news_report", chunk["news_report"])
+                        message_buffer.update_agent_status("News Analyst", "completed")
+                        if "fundamentals" in analysts:
+                            message_buffer.update_agent_status("Fundamentals Analyst", "in_progress")
+
+                    if chunk.get("fundamentals_report"):
+                        message_buffer.update_report_section("fundamentals_report", chunk["fundamentals_report"])
+                        message_buffer.update_agent_status("Fundamentals Analyst", "completed")
+                        update_research_team_status("in_progress")
+
+                    if chunk.get("investment_debate_state"):
+                        debate_state = chunk["investment_debate_state"]
+                        if debate_state.get("bull_history"):
+                            update_research_team_status("in_progress")
+                            latest_bull = debate_state["bull_history"].split("\n")[-1]
+                            if latest_bull:
+                                message_buffer.add_message("Reasoning", latest_bull)
+                                message_buffer.update_report_section("investment_plan", f"### Bull Researcher Analysis\n{latest_bull}")
+                        if debate_state.get("bear_history"):
+                            update_research_team_status("in_progress")
+                            latest_bear = debate_state["bear_history"].split("\n")[-1]
+                            if latest_bear:
+                                message_buffer.add_message("Reasoning", latest_bear)
+                                message_buffer.update_report_section(
+                                    "investment_plan",
+                                    f"{message_buffer.report_sections['investment_plan']}\n\n### Bear Researcher Analysis\n{latest_bear}",
+                                )
+                        if debate_state.get("judge_decision"):
+                            update_research_team_status("in_progress")
+                            message_buffer.add_message("Reasoning", f"Research Manager: {debate_state['judge_decision']}")
+                            message_buffer.update_report_section(
+                                "investment_plan",
+                                f"{message_buffer.report_sections['investment_plan']}\n\n### Research Manager Decision\n{debate_state['judge_decision']}",
+                            )
+                            update_research_team_status("completed")
+                            message_buffer.update_agent_status("Risky Analyst", "in_progress")
+
+                    if chunk.get("trader_investment_plan"):
+                        message_buffer.update_report_section("trader_investment_plan", chunk["trader_investment_plan"])
+                        message_buffer.update_agent_status("Risky Analyst", "in_progress")
+
+                    if chunk.get("risk_debate_state"):
+                        risk_state = chunk["risk_debate_state"]
+                        if risk_state.get("current_risky_response"):
+                            message_buffer.update_agent_status("Risky Analyst", "in_progress")
+                            message_buffer.add_message("Reasoning", f"Risky Analyst: {risk_state['current_risky_response']}")
+                            message_buffer.update_report_section("final_trade_decision", f"### Risky Analyst Analysis\n{risk_state['current_risky_response']}")
+                        if risk_state.get("current_safe_response"):
+                            message_buffer.update_agent_status("Safe Analyst", "in_progress")
+                            message_buffer.add_message("Reasoning", f"Safe Analyst: {risk_state['current_safe_response']}")
+                            message_buffer.update_report_section("final_trade_decision", f"### Safe Analyst Analysis\n{risk_state['current_safe_response']}")
+                        if risk_state.get("current_neutral_response"):
+                            message_buffer.update_agent_status("Neutral Analyst", "in_progress")
+                            message_buffer.add_message("Reasoning", f"Neutral Analyst: {risk_state['current_neutral_response']}")
+                            message_buffer.update_report_section("final_trade_decision", f"### Neutral Analyst Analysis\n{risk_state['current_neutral_response']}")
+                        if risk_state.get("judge_decision"):
+                            message_buffer.update_agent_status("Portfolio Manager", "in_progress")
+                            message_buffer.add_message("Reasoning", f"Portfolio Manager: {risk_state['judge_decision']}")
+                            message_buffer.update_report_section("final_trade_decision", f"### Portfolio Manager Decision\n{risk_state['judge_decision']}")
+                            for agent in ["Risky Analyst", "Safe Analyst", "Neutral Analyst", "Portfolio Manager"]:
+                                message_buffer.update_agent_status(agent, "completed")
+
+                    update_display(layout)
+
+                else:
+                    # Non-interactive: write directly to log file
+                    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                    with open(log_file, "a") as f:
+                        f.write(f"{timestamp} [{msg_type}] {content.replace(chr(10), ' ')}\n")
+                    if hasattr(last_message, "tool_calls"):
+                        for tc in last_message.tool_calls:
+                            if isinstance(tc, dict):
+                                tool_name, tool_args = tc["name"], tc["args"]
+                            else:
+                                tool_name, tool_args = tc.name, tc.args
+                            args_str = ", ".join(f"{k}={v}" for k, v in (tool_args.items() if isinstance(tool_args, dict) else []))
+                            with open(log_file, "a") as f:
+                                f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
+                    for section in REPORT_SECTIONS:
+                        if chunk.get(section):
+                            with open(report_dir / f"{section}.md", "w") as f:
+                                f.write(extract_content_string(chunk[section]))
+
+            trace.append(chunk)
+
+        # ── Shared: finalize ────────────────────────────────────────────────
+        final_state = trace[-1]
+        decision = graph.process_signal(final_state.get("final_trade_decision", ""))
+
+        if execute_trades:
+            execute_alpaca_trade(decision, ticker, trade_shares, dry_run=dry_run_trades)
+
+        if interactive:
+            for agent in message_buffer.agent_status:
+                message_buffer.update_agent_status(agent, "completed")
+            message_buffer.add_message("Analysis", f"Completed analysis for {analysis_date}")
+            for section in message_buffer.report_sections:
+                if final_state.get(section):
+                    message_buffer.update_report_section(section, final_state[section])
+            display_complete_report(final_state)
+            update_display(layout)
+        else:
+            console.print(f"[green]Analysis completed![/green]")
+            console.print(f"[cyan]Results saved to: {results_dir}[/cyan]")
+
     return {
         "ticker": ticker,
         "analysis_date": analysis_date,
@@ -944,388 +1070,6 @@ def run_analysis_non_interactive(
         "results_dir": str(results_dir),
         "final_state": final_state,
     }
-
-
-def run_analysis(ticker: Optional[str] = None):
-    # First get all user selections
-    selections = get_user_selections(ticker)
-
-    # Create config with selected research depth
-    config = DEFAULT_CONFIG.copy()
-    config["max_debate_rounds"] = selections["research_depth"]
-    config["max_risk_discuss_rounds"] = selections["research_depth"]
-    config["quick_think_llm"] = selections["shallow_thinker"]
-    config["deep_think_llm"] = selections["deep_thinker"]
-    config["backend_url"] = selections["backend_url"]
-    config["llm_provider"] = selections["llm_provider"].lower()
-
-    # Configure data vendors (default uses yfinance and Alpha Vantage)
-    config["data_vendors"] = {
-        "core_stock_apis": "alpha_vantage",           # Options: yfinance, alpha_vantage, local
-        "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
-        "fundamental_data": "alpha_vantage",     # Options: openai, alpha_vantage, local
-        "news_data": "google",            # Options: openai, alpha_vantage, google, local
-    }
-
-    # Initialize the graph
-    graph = TradingAgentsGraph(
-        [analyst.value for analyst in selections["analysts"]], config=config, debug=True
-    )
-
-    # Create result directory
-    current_time = datetime.datetime.now().strftime("%H%M%S")
-    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"] / current_time
-    results_dir.mkdir(parents=True, exist_ok=True)
-    report_dir = results_dir / "reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    log_file = results_dir / "message_tool.log"
-    log_file.touch(exist_ok=True)
-
-    def save_message_decorator(obj, func_name):
-        func = getattr(obj, func_name)
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            func(*args, **kwargs)
-            timestamp, message_type, content = obj.messages[-1]
-            content = content.replace("\n", " ")  # Replace newlines with spaces
-            with open(log_file, "a") as f:
-                f.write(f"{timestamp} [{message_type}] {content}\n")
-        return wrapper
-    
-    def save_tool_call_decorator(obj, func_name):
-        func = getattr(obj, func_name)
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            func(*args, **kwargs)
-            timestamp, tool_name, args = obj.tool_calls[-1]
-            args_str = ", ".join(f"{k}={v}" for k, v in args.items())
-            with open(log_file, "a") as f:
-                f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
-        return wrapper
-
-    def save_report_section_decorator(obj, func_name):
-        func = getattr(obj, func_name)
-        @wraps(func)
-        def wrapper(section_name, content):
-            func(section_name, content)
-            if section_name in obj.report_sections and obj.report_sections[section_name] is not None:
-                content = obj.report_sections[section_name]
-                if content:
-                    file_name = f"{section_name}.md"
-                    with open(report_dir / file_name, "w") as f:
-                        f.write(extract_content_string(content))
-        return wrapper
-
-    message_buffer.add_message = save_message_decorator(message_buffer, "add_message")
-    message_buffer.add_tool_call = save_tool_call_decorator(message_buffer, "add_tool_call")
-    message_buffer.update_report_section = save_report_section_decorator(message_buffer, "update_report_section")
-
-    # Now start the display layout
-    layout = create_layout()
-
-    with Live(layout, refresh_per_second=4) as live:
-        # Initial display
-        update_display(layout)
-
-        # Add initial messages
-        message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
-        message_buffer.add_message(
-            "System", f"Analysis date: {selections['analysis_date']}"
-        )
-        message_buffer.add_message(
-            "System",
-            f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}",
-        )
-        update_display(layout)
-
-        # Reset agent statuses
-        for agent in message_buffer.agent_status:
-            message_buffer.update_agent_status(agent, "pending")
-
-        # Reset report sections
-        for section in message_buffer.report_sections:
-            message_buffer.report_sections[section] = None
-        message_buffer.current_report = None
-        message_buffer.final_report = None
-
-        # Update agent status to in_progress for the first analyst
-        first_analyst = f"{selections['analysts'][0].value.capitalize()} Analyst"
-        message_buffer.update_agent_status(first_analyst, "in_progress")
-        update_display(layout)
-
-        # Create spinner text
-        spinner_text = (
-            f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
-        )
-        update_display(layout, spinner_text)
-
-        # Initialize state and get graph args
-        init_agent_state = graph.propagator.create_initial_state(
-            selections["ticker"], selections["analysis_date"]
-        )
-        args = graph.propagator.get_graph_args()
-
-        # Stream the analysis
-        trace = []
-        for chunk in graph.graph.stream(init_agent_state, **args):
-            if len(chunk["messages"]) > 0:
-                # Get the last message from the chunk
-                last_message = chunk["messages"][-1]
-
-                # Extract message content and type
-                if hasattr(last_message, "content"):
-                    content = extract_content_string(last_message.content)  # Use the helper function
-                    msg_type = "Reasoning"
-                else:
-                    content = str(last_message)
-                    msg_type = "System"
-
-                # Add message to buffer
-                message_buffer.add_message(msg_type, content)                
-
-                # If it's a tool call, add it to tool calls
-                if hasattr(last_message, "tool_calls"):
-                    for tool_call in last_message.tool_calls:
-                        # Handle both dictionary and object tool calls
-                        if isinstance(tool_call, dict):
-                            message_buffer.add_tool_call(
-                                tool_call["name"], tool_call["args"]
-                            )
-                        else:
-                            message_buffer.add_tool_call(tool_call.name, tool_call.args)
-
-                # Update reports and agent status based on chunk content
-                # Analyst Team Reports
-                if "market_report" in chunk and chunk["market_report"]:
-                    message_buffer.update_report_section(
-                        "market_report", chunk["market_report"]
-                    )
-                    message_buffer.update_agent_status("Market Analyst", "completed")
-                    # Set next analyst to in_progress
-                    if "social" in selections["analysts"]:
-                        message_buffer.update_agent_status(
-                            "Social Analyst", "in_progress"
-                        )
-
-                if "sentiment_report" in chunk and chunk["sentiment_report"]:
-                    message_buffer.update_report_section(
-                        "sentiment_report", chunk["sentiment_report"]
-                    )
-                    message_buffer.update_agent_status("Social Analyst", "completed")
-                    # Set next analyst to in_progress
-                    if "news" in selections["analysts"]:
-                        message_buffer.update_agent_status(
-                            "News Analyst", "in_progress"
-                        )
-
-                if "news_report" in chunk and chunk["news_report"]:
-                    message_buffer.update_report_section(
-                        "news_report", chunk["news_report"]
-                    )
-                    message_buffer.update_agent_status("News Analyst", "completed")
-                    # Set next analyst to in_progress
-                    if "fundamentals" in selections["analysts"]:
-                        message_buffer.update_agent_status(
-                            "Fundamentals Analyst", "in_progress"
-                        )
-
-                if "fundamentals_report" in chunk and chunk["fundamentals_report"]:
-                    message_buffer.update_report_section(
-                        "fundamentals_report", chunk["fundamentals_report"]
-                    )
-                    message_buffer.update_agent_status(
-                        "Fundamentals Analyst", "completed"
-                    )
-                    # Set all research team members to in_progress
-                    update_research_team_status("in_progress")
-
-                # Research Team - Handle Investment Debate State
-                if (
-                    "investment_debate_state" in chunk
-                    and chunk["investment_debate_state"]
-                ):
-                    debate_state = chunk["investment_debate_state"]
-
-                    # Update Bull Researcher status and report
-                    if "bull_history" in debate_state and debate_state["bull_history"]:
-                        # Keep all research team members in progress
-                        update_research_team_status("in_progress")
-                        # Extract latest bull response
-                        bull_responses = debate_state["bull_history"].split("\n")
-                        latest_bull = bull_responses[-1] if bull_responses else ""
-                        if latest_bull:
-                            message_buffer.add_message("Reasoning", latest_bull)
-                            # Update research report with bull's latest analysis
-                            message_buffer.update_report_section(
-                                "investment_plan",
-                                f"### Bull Researcher Analysis\n{latest_bull}",
-                            )
-
-                    # Update Bear Researcher status and report
-                    if "bear_history" in debate_state and debate_state["bear_history"]:
-                        # Keep all research team members in progress
-                        update_research_team_status("in_progress")
-                        # Extract latest bear response
-                        bear_responses = debate_state["bear_history"].split("\n")
-                        latest_bear = bear_responses[-1] if bear_responses else ""
-                        if latest_bear:
-                            message_buffer.add_message("Reasoning", latest_bear)
-                            # Update research report with bear's latest analysis
-                            message_buffer.update_report_section(
-                                "investment_plan",
-                                f"{message_buffer.report_sections['investment_plan']}\n\n### Bear Researcher Analysis\n{latest_bear}",
-                            )
-
-                    # Update Research Manager status and final decision
-                    if (
-                        "judge_decision" in debate_state
-                        and debate_state["judge_decision"]
-                    ):
-                        # Keep all research team members in progress until final decision
-                        update_research_team_status("in_progress")
-                        message_buffer.add_message(
-                            "Reasoning",
-                            f"Research Manager: {debate_state['judge_decision']}",
-                        )
-                        # Update research report with final decision
-                        message_buffer.update_report_section(
-                            "investment_plan",
-                            f"{message_buffer.report_sections['investment_plan']}\n\n### Research Manager Decision\n{debate_state['judge_decision']}",
-                        )
-                        # Mark all research team members as completed
-                        update_research_team_status("completed")
-                        # Set first risk analyst to in_progress
-                        message_buffer.update_agent_status(
-                            "Risky Analyst", "in_progress"
-                        )
-
-                # Trading Team
-                if (
-                    "trader_investment_plan" in chunk
-                    and chunk["trader_investment_plan"]
-                ):
-                    message_buffer.update_report_section(
-                        "trader_investment_plan", chunk["trader_investment_plan"]
-                    )
-                    # Set first risk analyst to in_progress
-                    message_buffer.update_agent_status("Risky Analyst", "in_progress")
-
-                # Risk Management Team - Handle Risk Debate State
-                if "risk_debate_state" in chunk and chunk["risk_debate_state"]:
-                    risk_state = chunk["risk_debate_state"]
-
-                    # Update Risky Analyst status and report
-                    if (
-                        "current_risky_response" in risk_state
-                        and risk_state["current_risky_response"]
-                    ):
-                        message_buffer.update_agent_status(
-                            "Risky Analyst", "in_progress"
-                        )
-                        message_buffer.add_message(
-                            "Reasoning",
-                            f"Risky Analyst: {risk_state['current_risky_response']}",
-                        )
-                        # Update risk report with risky analyst's latest analysis only
-                        message_buffer.update_report_section(
-                            "final_trade_decision",
-                            f"### Risky Analyst Analysis\n{risk_state['current_risky_response']}",
-                        )
-
-                    # Update Safe Analyst status and report
-                    if (
-                        "current_safe_response" in risk_state
-                        and risk_state["current_safe_response"]
-                    ):
-                        message_buffer.update_agent_status(
-                            "Safe Analyst", "in_progress"
-                        )
-                        message_buffer.add_message(
-                            "Reasoning",
-                            f"Safe Analyst: {risk_state['current_safe_response']}",
-                        )
-                        # Update risk report with safe analyst's latest analysis only
-                        message_buffer.update_report_section(
-                            "final_trade_decision",
-                            f"### Safe Analyst Analysis\n{risk_state['current_safe_response']}",
-                        )
-
-                    # Update Neutral Analyst status and report
-                    if (
-                        "current_neutral_response" in risk_state
-                        and risk_state["current_neutral_response"]
-                    ):
-                        message_buffer.update_agent_status(
-                            "Neutral Analyst", "in_progress"
-                        )
-                        message_buffer.add_message(
-                            "Reasoning",
-                            f"Neutral Analyst: {risk_state['current_neutral_response']}",
-                        )
-                        # Update risk report with neutral analyst's latest analysis only
-                        message_buffer.update_report_section(
-                            "final_trade_decision",
-                            f"### Neutral Analyst Analysis\n{risk_state['current_neutral_response']}",
-                        )
-
-                    # Update Portfolio Manager status and final decision
-                    if "judge_decision" in risk_state and risk_state["judge_decision"]:
-                        message_buffer.update_agent_status(
-                            "Portfolio Manager", "in_progress"
-                        )
-                        message_buffer.add_message(
-                            "Reasoning",
-                            f"Portfolio Manager: {risk_state['judge_decision']}",
-                        )
-                        # Update risk report with final decision only
-                        message_buffer.update_report_section(
-                            "final_trade_decision",
-                            f"### Portfolio Manager Decision\n{risk_state['judge_decision']}",
-                        )
-                        # Mark risk analysts as completed
-                        message_buffer.update_agent_status("Risky Analyst", "completed")
-                        message_buffer.update_agent_status("Safe Analyst", "completed")
-                        message_buffer.update_agent_status(
-                            "Neutral Analyst", "completed"
-                        )
-                        message_buffer.update_agent_status(
-                            "Portfolio Manager", "completed"
-                        )
-
-                # Update the display
-                update_display(layout)
-
-            trace.append(chunk)
-
-        # Get final state and decision
-        final_state = trace[-1]
-        decision = graph.process_signal(final_state["final_trade_decision"])
-
-        if selections.get("execute_trades"):
-            execute_alpaca_trade(
-                decision,
-                selections["ticker"],
-                selections["trade_shares"],
-                dry_run=selections.get("dry_run_trades", False),
-            )
-
-        # Update all agent statuses to completed
-        for agent in message_buffer.agent_status:
-            message_buffer.update_agent_status(agent, "completed")
-
-        message_buffer.add_message(
-            "Analysis", f"Completed analysis for {selections['analysis_date']}"
-        )
-
-        # Update final report sections
-        for section in message_buffer.report_sections.keys():
-            if section in final_state:
-                message_buffer.update_report_section(section, final_state[section])
-
-        # Display the complete final report
-        display_complete_report(final_state)
-
-        update_display(layout)
 
 
 @app.command()
@@ -1352,38 +1096,48 @@ def analyze(
         setup_tradingagents_logger(True)
 
     if interactive:
-        # Interactive mode
-        run_analysis(ticker)
+        selections = get_user_selections(ticker)
+        analysts_list = [a.value for a in selections["analysts"]]
+        result = run_analysis(
+            ticker=selections["ticker"],
+            analysis_date=selections["analysis_date"],
+            analysts=analysts_list,
+            research_depth=selections["research_depth"],
+            llm_provider=selections["llm_provider"],
+            backend_url=selections["backend_url"],
+            shallow_thinker=selections["shallow_thinker"],
+            deep_thinker=selections["deep_thinker"],
+            execute_trades=selections["execute_trades"],
+            trade_shares=selections["trade_shares"],
+            dry_run_trades=selections["dry_run_trades"],
+            interactive=True,
+        )
     else:
-        # Non-interactive mode
         if not ticker:
             console.print("[red]Error: --ticker is required for non-interactive mode[/red]")
             raise typer.Exit(1)
-        
-        # Set default date if not provided
+
         if not analysis_date:
             analysis_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        
-        # Build analysts list based on flags
-        analysts = []
+
+        analysts_list = []
         if market:
-            analysts.append("market")
+            analysts_list.append("market")
         if social:
-            analysts.append("social")
+            analysts_list.append("social")
         if news:
-            analysts.append("news")
+            analysts_list.append("news")
         if fundamentals:
-            analysts.append("fundamentals")
-        
-        if not analysts:
+            analysts_list.append("fundamentals")
+
+        if not analysts_list:
             console.print("[red]Error: At least one analyst must be enabled[/red]")
             raise typer.Exit(1)
-        
-        # Run non-interactive analysis
-        result = run_analysis_non_interactive(
+
+        result = run_analysis(
             ticker=ticker.upper(),
             analysis_date=analysis_date,
-            analysts=analysts,
+            analysts=analysts_list,
             research_depth=research_depth,
             llm_provider=llm_provider,
             backend_url=backend_url,
@@ -1392,8 +1146,9 @@ def analyze(
             execute_trades=execute_trades,
             trade_shares=shares,
             dry_run_trades=dry_run_trades,
+            interactive=False,
         )
-        
+
         console.print(f"[green]Decision: {result['decision']}[/green]")
 
 
