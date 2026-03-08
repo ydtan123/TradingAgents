@@ -6,7 +6,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
 )
 from tradingagents.dataflows.config import get_config
+import logging
 
+logger = logging.getLogger("tradingagents.news_analyst")
 
 def create_news_analyst(llm):
     def news_analyst_node(state):
@@ -53,7 +55,7 @@ def create_news_analyst(llm):
 
         if len(result.tool_calls) == 0:
             report = result.content
-
+        logger.info(f"News Analyst selected indicators and generated report: {report}")
         return {
             "messages": [result],
             "news_report": report,

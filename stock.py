@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import argparse
-import logging
 from datetime import datetime
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.common import setup_tradingagents_logger
 from prompts import STOCK_LIST, system_instruction
 from google import genai
 import pandas as pd
@@ -178,14 +178,8 @@ if __name__ == "__main__":
                 print(f"Compatible Model: {model.name}")
         exit(0)
     
-    # Configure logging level based on verbose flag
-    # Only configure tradingagents logger, don't affect other libraries
-    tradingagents_logger = logging.getLogger("tradingagents")
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(filename)s:%(lineno)d - %(levelname)s - %(message)s")
-    handler.setFormatter(formatter)
-    tradingagents_logger.addHandler(handler)
-    tradingagents_logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    
+    setup_tradingagents_logger(args.verbose)
     
     # Create a custom config
     config = DEFAULT_CONFIG.copy()

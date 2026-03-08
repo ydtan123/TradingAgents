@@ -1,7 +1,8 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction, get_news
 from tradingagents.dataflows.config import get_config
-
+import logging
+logger = logging.getLogger("tradingagents.social_media_analyst")
 
 def create_social_media_analyst(llm):
     def social_media_analyst_node(state):
@@ -48,7 +49,7 @@ def create_social_media_analyst(llm):
 
         if len(result.tool_calls) == 0:
             report = result.content
-
+        logger.info(f"Social Media Analyst selected indicators and generated report: {report}")
         return {
             "messages": [result],
             "sentiment_report": report,
