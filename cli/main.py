@@ -1112,7 +1112,9 @@ def run_analysis(
 
         # ── Shared: finalize ────────────────────────────────────────────────
         final_state = trace[-1]
-        decision = graph.process_signal(final_state.get("final_trade_decision", ""))
+        decision = extract_content_string(
+            graph.process_signal(final_state.get("final_trade_decision", ""))
+        )
 
         if execute_trades:
             execute_alpaca_trade(decision, ticker, trade_shares, dry_run=dry_run_trades)
