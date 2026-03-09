@@ -1119,6 +1119,25 @@ def run_analysis(
         if execute_trades:
             execute_alpaca_trade(decision, ticker, trade_shares, dry_run=dry_run_trades)
 
+        # ── Shared: save full debate histories to Markdown files ─────────────
+        debate_state = final_state.get("investment_debate_state", {})
+        risk_state = final_state.get("risk_debate_state", {})
+
+        debate_files = {
+            "debate_bull_history.md": debate_state.get("bull_history", ""),
+            "debate_bear_history.md": debate_state.get("bear_history", ""),
+            "debate_research_manager_decision.md": debate_state.get("judge_decision", ""),
+            "debate_risk_risky_history.md": risk_state.get("risky_history", ""),
+            "debate_risk_safe_history.md": risk_state.get("safe_history", ""),
+            "debate_risk_neutral_history.md": risk_state.get("neutral_history", ""),
+            "debate_risk_judge_decision.md": risk_state.get("judge_decision", ""),
+        }
+
+        for filename, content in debate_files.items():
+            if content:
+                with open(report_dir / filename, "w") as f:
+                    f.write(extract_content_string(content))
+
         if interactive:
             for agent in message_buffer.agent_status:
                 message_buffer.update_agent_status(agent, "completed")
