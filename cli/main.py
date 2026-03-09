@@ -1,4 +1,5 @@
 from typing import Optional
+from collections import defaultdict
 import datetime
 import typer
 from pathlib import Path
@@ -919,10 +920,74 @@ def run_analysis(
         "final_trade_decision",
     ]
 
+    # ── Shared: usage counters ──────────────────────────────────────────────
+    # llm_calls: {model -> {agent -> count}}
+    # tool_calls_tracker: {"vendor::tool" -> {agent -> count}}
+    llm_calls: dict = defaultdict(lambda: defaultdict(int))
+    tool_calls_tracker: dict = defaultdict(lambda: defaultdict(int))
+
+    # Research/Risk agents invoke llm.invoke() directly and never update `messages`.
+    # We detect them by node name and count 1 LLM call per execution.
+    NON_MESSAGE_LLM_NODES = {
+        "Bull Researcher": config["quick_think_llm"],
+        "Bear Researcher": config["quick_think_llm"],
+        "Research Manager": config["deep_think_llm"],
+        "Risky Analyst": config["quick_think_llm"],
+        "Neutral Analyst": config["quick_think_llm"],
+        "Safe Analyst": config["quick_think_llm"],
+        "Risk Judge": config["deep_think_llm"],
+    }
+
+    def _vendor_for_tool(tool_name: str) -> str:
+        """Return the configured vendor for a tool, or 'unknown'."""
+        from tradingagents.dataflows.interface import get_category_for_method, get_vendor
+        try:
+            category = get_category_for_method(tool_name)
+            return get_vendor(category, tool_name)
+        except Exception:
+            return "unknown"
+
+    def _model_from_message(msg) -> str:
+        """Extract model name from LangChain AIMessage response metadata."""
+        meta = getattr(msg, "response_metadata", {}) or {}
+        return (
+            meta.get("model_name")
+            or meta.get("model")
+            or meta.get("model_id")
+            or "unknown"
+        )
+
+    # Use dual stream mode: "updates" gives node names, "values" gives full state
+    recursion_limit = graph_args.get("config", {}).get("recursion_limit", 50)
+    stream_config = {"recursion_limit": recursion_limit}
+
     trace = []
     ctx = Live(layout, refresh_per_second=4) if interactive else nullcontext()
     with ctx:
-        for chunk in graph.graph.stream(init_agent_state, **graph_args):
+        for stream_mode, chunk in graph.graph.stream(
+            init_agent_state, stream_mode=["values", "updates"], config=stream_config
+        ):
+            if stream_mode == "updates":
+                # Track LLM and tool calls with agent name from node name
+                for node_name, state_updates in chunk.items():
+                    # Research/Risk agents use llm.invoke() directly and never update
+                    # `messages`, so we detect them by node name and count 1 call each.
+                    if node_name in NON_MESSAGE_LLM_NODES:
+                        model = NON_MESSAGE_LLM_NODES[node_name]
+                        llm_calls[model][node_name] += 1
+                    # Message-based agents (analysts, trader) put AIMessages in `messages`
+                    for msg in state_updates.get("messages", []):
+                        if hasattr(msg, "tool_calls"):
+                            model = _model_from_message(msg)
+                            llm_calls[model][node_name] += 1
+                            for tc in msg.tool_calls:
+                                tname = tc["name"] if isinstance(tc, dict) else tc.name
+                                vendor = _vendor_for_tool(tname)
+                                tool_calls_tracker[f"{vendor}::{tname}"][node_name] += 1
+                continue  # rest of loop only processes "values" chunks
+
+            # ── "values" chunk: existing state / display logic ──────────────
+            chunk = chunk  # full state snapshot
             if chunk["messages"]:
                 last_message = chunk["messages"][-1]
 
@@ -1041,6 +1106,8 @@ def run_analysis(
                             with open(report_dir / f"{section}.md", "w") as f:
                                 f.write(extract_content_string(chunk[section]))
 
+                    # Note: tool_call_counts already updated in the shared block above
+
             trace.append(chunk)
 
         # ── Shared: finalize ────────────────────────────────────────────────
@@ -1062,6 +1129,41 @@ def run_analysis(
         else:
             console.print(f"[green]Analysis completed![/green]")
             console.print(f"[cyan]Results saved to: {results_dir}[/cyan]")
+
+        # ── Shared: usage summary ────────────────────────────────────────────
+        total_llm_calls = sum(sum(agents.values()) for agents in llm_calls.values())
+        total_tool_calls = sum(sum(agents.values()) for agents in tool_calls_tracker.values())
+
+        console.print()
+        summary_table = Table(
+            title="Analysis Usage Summary",
+            box=box.SIMPLE_HEAD,
+            show_header=True,
+            header_style="bold magenta",
+        )
+        summary_table.add_column("Category", style="cyan")
+        summary_table.add_column("Detail", style="white")
+        summary_table.add_column("Count", style="green", justify="right")
+
+        # LLM calls section
+        summary_table.add_row("[bold]LLM Calls[/bold]", f"[dim]total[/dim]", str(total_llm_calls))
+        for model, agents in sorted(llm_calls.items()):
+            model_total = sum(agents.values())
+            summary_table.add_row("", f"[yellow]{model}[/yellow]", str(model_total))
+            for agent, count in sorted(agents.items(), key=lambda x: -x[1]):
+                summary_table.add_row("", f"  [dim]{agent}[/dim]", str(count))
+
+        summary_table.add_section()
+
+        # Tool calls section
+        summary_table.add_row("[bold]Tool Calls[/bold]", f"[dim]total[/dim]", str(total_tool_calls))
+        for vendor_tool, agents in sorted(tool_calls_tracker.items(), key=lambda x: -sum(x[1].values())):
+            tool_total = sum(agents.values())
+            summary_table.add_row("", f"[yellow]{vendor_tool}[/yellow]", str(tool_total))
+            for agent, count in sorted(agents.items(), key=lambda x: -x[1]):
+                summary_table.add_row("", f"  [dim]{agent}[/dim]", str(count))
+
+        console.print(summary_table)
 
     return {
         "ticker": ticker,
