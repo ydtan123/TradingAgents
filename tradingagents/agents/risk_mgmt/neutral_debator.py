@@ -1,5 +1,8 @@
+import logging
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_neutral_debator(llm):
@@ -18,6 +21,9 @@ def create_neutral_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
+        count = risk_debate_state.get("count", 0)
+        logger.info(f"Neutral Analyst starting (risk debate round {count + 1})")
+
         prompt = f"""As the Neutral Risk Analyst, your role is to provide a balanced perspective, weighing both the potential benefits and risks of the trader's decision or plan. You prioritize a well-rounded approach, evaluating the upsides and downsides while factoring in broader market trends, potential economic shifts, and diversification strategies.Here is the trader's decision:
 
 {trader_decision}
@@ -35,6 +41,7 @@ Engage actively by analyzing both sides critically, addressing weaknesses in the
         response = llm.invoke(prompt)
 
         argument = f"Neutral Analyst: {response.content}"
+        logger.info(f"Neutral Analyst completed (risk debate round {count + 1}): {argument[:200]}...")
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,

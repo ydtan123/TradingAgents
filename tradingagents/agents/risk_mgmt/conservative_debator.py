@@ -1,6 +1,10 @@
+import logging
+
 from langchain_core.messages import AIMessage
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_safe_debator(llm):
@@ -19,6 +23,9 @@ def create_safe_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
+        count = risk_debate_state.get("count", 0)
+        logger.info(f"Safe Analyst starting (risk debate round {count + 1})")
+
         prompt = f"""As the Safe/Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
 
 {trader_decision}
@@ -36,6 +43,7 @@ Engage by questioning their optimism and emphasizing the potential downsides the
         response = llm.invoke(prompt)
 
         argument = f"Safe Analyst: {response.content}"
+        logger.info(f"Safe Analyst completed (risk debate round {count + 1}): {argument[:200]}...")
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,

@@ -1,5 +1,8 @@
+import logging
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_research_manager(llm, memory):
@@ -11,6 +14,8 @@ def create_research_manager(llm, memory):
         fundamentals_report = state["fundamentals_report"]
 
         investment_debate_state = state["investment_debate_state"]
+
+        logger.info("Research Manager starting — synthesizing debate and making investment decision")
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -37,6 +42,7 @@ Here is the debate:
 Debate History:
 {history}"""
         response = llm.invoke(prompt)
+        logger.info(f"Research Manager completed decision: {str(response.content)[:200]}...")
 
         new_investment_debate_state = {
             "judge_decision": response.content,

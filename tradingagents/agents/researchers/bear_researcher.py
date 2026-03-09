@@ -1,6 +1,10 @@
+import logging
+
 from langchain_core.messages import AIMessage
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_bear_researcher(llm, memory):
@@ -14,6 +18,9 @@ def create_bear_researcher(llm, memory):
         sentiment_report = state["sentiment_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
+
+        count = investment_debate_state.get("count", 0)
+        logger.info(f"Bear Researcher starting (debate round {count + 1})")
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -47,6 +54,7 @@ Use this information to deliver a compelling bear argument, refute the bull's cl
         response = llm.invoke(prompt)
 
         argument = f"Bear Analyst: {response.content}"
+        logger.info(f"Bear Researcher completed (debate round {count + 1}): {argument[:200]}...")
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,

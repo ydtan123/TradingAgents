@@ -1,5 +1,8 @@
+import logging
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_risk_manager(llm, memory):
@@ -14,6 +17,8 @@ def create_risk_manager(llm, memory):
         fundamentals_report = state["news_report"]
         sentiment_report = state["sentiment_report"]
         trader_plan = state["investment_plan"]
+
+        logger.info("Risk Judge starting — evaluating risk debate and making final trade decision")
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -44,6 +49,7 @@ Deliverables:
 Focus on actionable insights and continuous improvement. Build on past lessons, critically evaluate all perspectives, and ensure each decision advances better outcomes."""
 
         response = llm.invoke(prompt)
+        logger.info(f"Risk Judge completed final decision: {str(response.content)[:200]}...")
 
         new_risk_debate_state = {
             "judge_decision": response.content,

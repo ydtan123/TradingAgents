@@ -1,5 +1,8 @@
+import logging
 import time
 import json
+
+logger = logging.getLogger(__name__)
 
 
 def create_risky_debator(llm):
@@ -18,6 +21,9 @@ def create_risky_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
+        count = risk_debate_state.get("count", 0)
+        logger.info(f"Risky Analyst starting (risk debate round {count + 1})")
+
         prompt = f"""As the Risky Risk Analyst, your role is to actively champion high-reward, high-risk opportunities, emphasizing bold strategies and competitive advantages. When evaluating the trader's decision or plan, focus intently on the potential upside, growth potential, and innovative benefits—even when these come with elevated risk. Use the provided market data and sentiment analysis to strengthen your arguments and challenge the opposing views. Specifically, respond directly to each point made by the conservative and neutral analysts, countering with data-driven rebuttals and persuasive reasoning. Highlight where their caution might miss critical opportunities or where their assumptions may be overly conservative. Here is the trader's decision:
 
 {trader_decision}
@@ -35,6 +41,7 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
         response = llm.invoke(prompt)
 
         argument = f"Risky Analyst: {response.content}"
+        logger.info(f"Risky Analyst completed (risk debate round {count + 1}): {argument[:200]}...")
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
