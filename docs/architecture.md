@@ -190,19 +190,19 @@ Tracks the Risky ↔ Safe ↔ Neutral debate.
 
 ## 3. Data Layer
 
-Agents call data tools (e.g., `get_news`, `get_stock_data`) defined in `tradingagents/agents/utils/agent_utils.py`. These are thin wrappers that delegate to `tradingagents/dataflows/interface.py`, which selects and calls the right vendor implementation.
+Agents call data tools (e.g., `get_news`, `get_stock_data`) defined in `tradingagents/agents/utils/*_tools.py` (one file per category) and re-exported from `agent_utils.py`. These tools delegate to `tradingagents/dataflows/interface.py`, which selects and calls the right vendor implementation.
 
 ### Vendor Routing Flow
 
 ```mermaid
 graph LR
-    AGENT["Agent\ne.g. News Analyst"] -->|"calls tool"| AU["agent_utils.py\nget_news()"]
+    AGENT["Agent\ne.g. News Analyst"] -->|"calls tool"| AU["*_tools.py\nget_news()"]
     AU --> IF["interface.py\nroute_to_vendor('get_news', ...)"]
     IF --> CAT["Determine category\nnews_data"]
     CAT --> VCFG["Read config\ndata_vendors.news_data\ne.g. alpha_vantage"]
     VCFG --> PV["Try primary vendor\nalpha_vantage impl"]
     PV -->|success| RES["Return result\nto agent"]
-    PV -->|"rate limit / exception"| FB["Try fallback vendors\nin order: openai → google → local"]
+    PV -->|"rate limit / exception"| FB["Try remaining vendors\n(tool-specific order\nfrom VENDOR_METHODS)"]
     FB -->|success| RES
     FB -->|all fail| ERR["Raise RuntimeError"]
 ```
@@ -240,6 +240,6 @@ Tools are grouped into four categories. The `data_vendors` config key sets the v
 1. Primary vendor(s) from config are tried first.
 2. If a primary vendor raises any exception (including `AlphaVantageRateLimitError`), the next vendor in the chain is tried.
 3. If **all vendors fail**, a `RuntimeError` is raised.
-4. For single-vendor configs, execution stops after the first success. For comma-separated multi-vendor configs (e.g., `"alpha_vantage,yfinance"`), all are attempted and results are concatenated.
+4. For single-vendor configs, execution stops after the first successful vendor. For comma-separated multi-vendor configs (e.g., `"alpha_vantage,yfinance"`), there is no early exit — the loop continues through all vendors in the fallback chain. Results from every successful vendor are concatenated and returned together.
 
 Source file: `tradingagents/dataflows/interface.py`
