@@ -123,12 +123,14 @@ graph TD
     TRADER --> RISKY["Risky Analyst\nquick_thinking_llm"]
     RISKY -->|"count < 3×max_risk\nlatest_speaker=Risky"| SAFE["Safe Analyst\nquick_thinking_llm"]
     SAFE -->|"count < 3×max_risk\nlatest_speaker=Safe"| NEU["Neutral Analyst\nquick_thinking_llm"]
-    NEU -->|"count < 3×max_risk\nlatest_speaker=Neutral"| RISKY
+    NEU -->|"count < 3×max_risk\n(else → Risky)"| RISKY
     RISKY -->|"count ≥ 3×max_risk"| RJ["Risk Judge\ndeep_thinking_llm"]
     SAFE -->|"count ≥ 3×max_risk"| RJ
     NEU -->|"count ≥ 3×max_risk"| RJ
     RJ --> END([END])
 ```
+
+> **Reading the diagram:** Each researcher and risk analyst prefixes their response text with their own name (e.g., `"Bull Researcher: ..."`, `"Risky Analyst: ..."`). The routing functions use `startswith()` on this prefix to identify who spoke last and determine the next speaker — it is a speaker-identification convention, not a content condition.
 
 ### State Objects
 
@@ -140,6 +142,7 @@ Extends LangGraph's `MessagesState` (which provides a `messages` list). All anal
 
 | Field | Type | Set by |
 |-------|------|--------|
+| `messages` | `list[BaseMessage]` | LangGraph (inherited from `MessagesState`) |
 | `company_of_interest` | `str` | Propagator (initial) |
 | `trade_date` | `str` | Propagator (initial) |
 | `sender` | `str` | Each agent on write |
