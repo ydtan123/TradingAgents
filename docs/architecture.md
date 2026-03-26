@@ -10,7 +10,7 @@ Each agent is a LangGraph node — a Python function that receives the current s
 
 ### LLMs
 
-Two LLM instances are created in `TradingAgentsGraph.__init__()` (`tradingagents/graph/trading_graph.py:76`):
+Two LLM instances are created in `TradingAgentsGraph.__init__()` (`tradingagents/graph/trading_graph.py:75`):
 
 | Name | Config key | Default | Used for |
 |------|-----------|---------|----------|
@@ -30,7 +30,7 @@ Analysts run **sequentially** (Market → Social → News → Fundamentals). Eac
 
 Source files: `tradingagents/agents/analysts/`
 
-**Tool call loop:** Each analyst uses a conditional edge (`ConditionalLogic.should_continue_<type>` in `tradingagents/graph/conditional_logic.py`). If the last message has `tool_calls`, execution goes to `tools_<type>` (a `ToolNode`) and back to the analyst. Otherwise it goes to `Msg Clear <Type>`, which deletes the analyst's messages from the shared `messages` list, then passes to the next analyst.
+**Tool call loop:** Each analyst uses a conditional edge — a routing function that inspects state and returns the name of the next node to execute — (`ConditionalLogic.should_continue_<type>` in `tradingagents/graph/conditional_logic.py`). If the last message has `tool_calls`, execution goes to `tools_<type>` (a `ToolNode`) and back to the analyst. Otherwise it goes to `Msg Clear <Type>`, which deletes the analyst's messages from the shared `messages` list, then passes to the next analyst.
 
 ### Researcher Team (Debate)
 
@@ -44,8 +44,10 @@ After all analysts finish, the Bull and Bear Researchers debate over the reports
 
 **Debate routing** (`ConditionalLogic.should_continue_debate`):
 - If `investment_debate_state["count"] >= 2 × max_debate_rounds` → go to Research Manager
-- Else if last response starts with `"Bull"` → go to Bear Researcher
+- Else if last response starts with `"Bull"` → go to Bear Researcher (each researcher prefixes their response with their own name, so this determines who spoke last)
 - Else → go to Bull Researcher
+
+> **Note:** `ConditionalLogic` accepts `max_debate_rounds` as a constructor parameter, but the current code in `trading_graph.py` instantiates it without passing the config value (`ConditionalLogic()` at line 99). Debate rounds are therefore fixed at 1 regardless of `config["max_debate_rounds"]`. This is a known wiring gap.
 
 Source files: `tradingagents/agents/researchers/`, `tradingagents/agents/managers/research_manager.py`
 
@@ -63,17 +65,19 @@ Source file: `tradingagents/agents/trader/trader.py`
 
 Three risk analysts debate the trader's plan in rotation: Risky → Safe → Neutral → Risky → ...
 
-| Agent | Node name | LLM | Output fields |
-|-------|-----------|-----|---------------|
-| Risky Analyst | `"Risky Analyst"` | quick | `risk_debate_state.risky_history` |
-| Safe Analyst | `"Safe Analyst"` | quick | `risk_debate_state.safe_history` |
-| Neutral Analyst | `"Neutral Analyst"` | quick | `risk_debate_state.neutral_history` |
-| Risk Judge | `"Risk Judge"` | deep | `risk_debate_state.judge_decision`, `final_trade_decision` |
+| Agent | Node name | LLM | Memory | Output fields |
+|-------|-----------|-----|--------|---------------|
+| Risky Analyst | `"Risky Analyst"` | quick | none | `risk_debate_state.risky_history` |
+| Safe Analyst | `"Safe Analyst"` | quick | none | `risk_debate_state.safe_history` |
+| Neutral Analyst | `"Neutral Analyst"` | quick | none | `risk_debate_state.neutral_history` |
+| Risk Judge | `"Risk Judge"` | deep | `risk_manager_memory` | `risk_debate_state.judge_decision`, `final_trade_decision` |
 
 **Risk debate routing** (`ConditionalLogic.should_continue_risk_analysis`):
 - If `risk_debate_state["count"] >= 3 × max_risk_discuss_rounds` → go to Risk Judge
 - If `latest_speaker` starts with `"Risky"` → go to Safe Analyst
 - If `latest_speaker` starts with `"Safe"` → go to Neutral Analyst
 - Else → go to Risky Analyst
+
+> **Note:** Like the researcher debate, `ConditionalLogic` accepts `max_risk_discuss_rounds` as a constructor parameter but it is not passed from the config (see the note above). Risk discussion rounds are fixed at 1 regardless of `config["max_risk_discuss_rounds"]`.
 
 Source files: `tradingagents/agents/risk_mgmt/`, `tradingagents/agents/managers/risk_manager.py`
