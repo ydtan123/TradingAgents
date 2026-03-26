@@ -185,3 +185,61 @@ Tracks the Risky ↔ Safe ↔ Neutral debate.
 | `current_neutral_response` | `str` | Most recent Neutral Analyst response |
 | `judge_decision` | `str` | Risk Judge's final ruling |
 | `count` | `int` | Number of debate turns taken |
+
+---
+
+## 3. Data Layer
+
+Agents call data tools (e.g., `get_news`, `get_stock_data`) defined in `tradingagents/agents/utils/agent_utils.py`. These are thin wrappers that delegate to `tradingagents/dataflows/interface.py`, which selects and calls the right vendor implementation.
+
+### Vendor Routing Flow
+
+```mermaid
+graph LR
+    AGENT["Agent\ne.g. News Analyst"] -->|"calls tool"| AU["agent_utils.py\nget_news()"]
+    AU --> IF["interface.py\nroute_to_vendor('get_news', ...)"]
+    IF --> CAT["Determine category\nnews_data"]
+    CAT --> VCFG["Read config\ndata_vendors.news_data\ne.g. alpha_vantage"]
+    VCFG --> PV["Try primary vendor\nalpha_vantage impl"]
+    PV -->|success| RES["Return result\nto agent"]
+    PV -->|"rate limit / exception"| FB["Try fallback vendors\nin order: openai → google → local"]
+    FB -->|success| RES
+    FB -->|all fail| ERR["Raise RuntimeError"]
+```
+
+### Tool Categories
+
+Tools are grouped into four categories. The `data_vendors` config key sets the vendor for each category; `tool_vendors` overrides at the individual tool level.
+
+| Category key | Description | Tools |
+|-------------|-------------|-------|
+| `core_stock_apis` | OHLCV price history | `get_stock_data` |
+| `technical_indicators` | MACD, RSI, Bollinger Bands, etc. | `get_indicators`, `get_all_indicators` |
+| `fundamental_data` | Financial statements | `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement` |
+| `news_data` | News, sentiment, insider activity | `get_news`, `get_global_news`, `get_insider_sentiment`, `get_insider_transactions` |
+
+### Available Vendors per Tool
+
+| Tool | Vendors available |
+|------|------------------|
+| `get_stock_data` | `alpha_vantage`, `yfinance`, `local` |
+| `get_indicators` | `alpha_vantage`, `yfinance`, `local` |
+| `get_all_indicators` | `yfinance`, `local` |
+| `get_fundamentals` | `alpha_vantage`, `yfinance`, `google`, `openai` |
+| `get_balance_sheet` | `alpha_vantage`, `yfinance`, `local` |
+| `get_cashflow` | `alpha_vantage`, `yfinance`, `local` |
+| `get_income_statement` | `alpha_vantage`, `yfinance`, `local` |
+| `get_news` | `alpha_vantage`, `openai`, `google`, `local` |
+| `get_global_news` | `google`, `openai`, `local` |
+| `get_insider_sentiment` | `local` |
+| `get_insider_transactions` | `alpha_vantage`, `yfinance`, `local` |
+
+### Fallback Behavior
+
+`route_to_vendor()` (`tradingagents/dataflows/interface.py:152`) builds a fallback chain:
+1. Primary vendor(s) from config are tried first.
+2. If a primary vendor raises any exception (including `AlphaVantageRateLimitError`), the next vendor in the chain is tried.
+3. If **all vendors fail**, a `RuntimeError` is raised.
+4. For single-vendor configs, execution stops after the first success. For comma-separated multi-vendor configs (e.g., `"alpha_vantage,yfinance"`), all are attempted and results are concatenated.
+
+Source file: `tradingagents/dataflows/interface.py`
