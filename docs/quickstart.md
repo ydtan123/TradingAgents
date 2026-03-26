@@ -9,7 +9,7 @@ Entry point: `TradingAgentsGraph.propagate(ticker, date)` in `tradingagents/grap
 ```mermaid
 graph TD
     START(["propagate(ticker, date)"]) --> MA["1. Market Analyst\nPrice & technical indicators"]
-    MA -->|"tool call loop\n(fetch data → re-invoke)"| MA
+    MA -->|"tool call loop (fetch data → re-invoke)"| MA
     MA -->|done| SMA["2. Social Media Analyst\nSentiment & Reddit news"]
     SMA -->|tool call loop| SMA
     SMA -->|done| NA["3. News Analyst\nRecent events & insider activity"]
@@ -23,8 +23,8 @@ graph TD
     BEAR -->|"max_debate_rounds reached"| RM
     RM --> TRADER["8. Trader\nGenerates trading plan"]
     TRADER --> RISKY["9. Risky Analyst\nPushes for aggressive action"]
-    RISKY --> SAFE["10. Safe Analyst\nAdvocates caution"]
-    SAFE --> NEU["11. Neutral Analyst\nBalances perspectives"]
+    RISKY -->|"round continues"| SAFE["10. Safe Analyst\nAdvocates caution"]
+    SAFE -->|"round continues"| NEU["11. Neutral Analyst\nBalances perspectives"]
     NEU -->|"round continues"| RISKY
     RISKY -->|"max_risk_discuss_rounds reached"| RJ["12. Risk Judge\nFinal approval / rejection"]
     SAFE -->|"max_risk_discuss_rounds reached"| RJ
