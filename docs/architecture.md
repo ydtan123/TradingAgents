@@ -81,3 +81,104 @@ Three risk analysts debate the trader's plan in rotation: Risky → Safe → Neu
 > **Note:** Like the researcher debate, `ConditionalLogic` accepts `max_risk_discuss_rounds` as a constructor parameter but it is not passed from the config (see the note above). Risk discussion rounds are fixed at 1 regardless of `config["max_risk_discuss_rounds"]`.
 
 Source files: `tradingagents/agents/risk_mgmt/`, `tradingagents/agents/managers/risk_manager.py`
+
+---
+
+## 2. LangGraph State Flow
+
+TradingAgents uses [LangGraph](https://github.com/langchain-ai/langgraph) to wire agents together. LangGraph is a graph execution engine where:
+- **Nodes** are Python functions that read and write state
+- **Edges** connect nodes in sequence
+- **Conditional edges** branch based on state values (used here for tool-call loops and debate cycling)
+- **StateGraph** is the graph definition; `.compile()` produces the runnable graph
+
+The graph is compiled once in `TradingAgentsGraph.__init__()` and reused across multiple `propagate()` calls.
+
+### Full Node & Edge Diagram
+
+```mermaid
+graph TD
+    START([START]) --> MA["Market Analyst\nquick_thinking_llm"]
+    MA -->|"tool_calls present\nshould_continue_market()"| TM["tools_market\nToolNode"]
+    TM --> MA
+    MA -->|no tool_calls| CMM["Msg Clear Market"]
+    CMM --> SMA["Social Analyst\nquick_thinking_llm"]
+    SMA -->|tool_calls present| TS["tools_social\nToolNode"]
+    TS --> SMA
+    SMA -->|no tool_calls| CMS["Msg Clear Social"]
+    CMS --> NA["News Analyst\nquick_thinking_llm"]
+    NA -->|tool_calls present| TN["tools_news\nToolNode"]
+    TN --> NA
+    NA -->|no tool_calls| CMN["Msg Clear News"]
+    CMN --> FA["Fundamentals Analyst\nquick_thinking_llm"]
+    FA -->|tool_calls present| TF["tools_fundamentals\nToolNode"]
+    TF --> FA
+    FA -->|no tool_calls| CMF["Msg Clear Fundamentals"]
+    CMF --> BULL["Bull Researcher\nquick_thinking_llm"]
+    BULL -->|"count < 2×max_debate_rounds\ncurrent_response starts with Bull"| BEAR["Bear Researcher\nquick_thinking_llm"]
+    BEAR -->|"count < 2×max_debate_rounds\ncurrent_response does not start with Bull"| BULL
+    BULL -->|"count ≥ 2×max_debate_rounds"| RM["Research Manager\ndeep_thinking_llm"]
+    BEAR -->|"count ≥ 2×max_debate_rounds"| RM
+    RM --> TRADER["Trader\nquick_thinking_llm"]
+    TRADER --> RISKY["Risky Analyst\nquick_thinking_llm"]
+    RISKY -->|"count < 3×max_risk\nlatest_speaker=Risky"| SAFE["Safe Analyst\nquick_thinking_llm"]
+    SAFE -->|"count < 3×max_risk\nlatest_speaker=Safe"| NEU["Neutral Analyst\nquick_thinking_llm"]
+    NEU -->|"count < 3×max_risk\nlatest_speaker=Neutral"| RISKY
+    RISKY -->|"count ≥ 3×max_risk"| RJ["Risk Judge\ndeep_thinking_llm"]
+    SAFE -->|"count ≥ 3×max_risk"| RJ
+    NEU -->|"count ≥ 3×max_risk"| RJ
+    RJ --> END([END])
+```
+
+### State Objects
+
+Three TypedDicts (defined in `tradingagents/agents/utils/agent_states.py`) are passed through the graph.
+
+#### `AgentState` (the main state)
+
+Extends LangGraph's `MessagesState` (which provides a `messages` list). All analyst reports and sub-states accumulate here as the graph progresses.
+
+| Field | Type | Set by |
+|-------|------|--------|
+| `company_of_interest` | `str` | Propagator (initial) |
+| `trade_date` | `str` | Propagator (initial) |
+| `sender` | `str` | Each agent on write |
+| `market_report` | `str` | Market Analyst |
+| `sentiment_report` | `str` | Social Media Analyst |
+| `news_report` | `str` | News Analyst |
+| `fundamentals_report` | `str` | Fundamentals Analyst |
+| `investment_debate_state` | `InvestDebateState` | Bull/Bear Researchers, Research Manager |
+| `investment_plan` | `str` | Research Manager |
+| `trader_investment_plan` | `str` | Trader |
+| `risk_debate_state` | `RiskDebateState` | Risk Analysts, Risk Judge |
+| `final_trade_decision` | `str` | Risk Judge |
+
+#### `InvestDebateState`
+
+Tracks the Bull ↔ Bear debate.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `bull_history` | `str` | Full transcript of Bull's arguments |
+| `bear_history` | `str` | Full transcript of Bear's arguments |
+| `history` | `str` | Combined debate transcript |
+| `current_response` | `str` | Last agent's response (used to determine next speaker) |
+| `judge_decision` | `str` | Research Manager's synthesis |
+| `count` | `int` | Number of debate turns taken |
+
+#### `RiskDebateState`
+
+Tracks the Risky ↔ Safe ↔ Neutral debate.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `risky_history` | `str` | Risky Analyst's argument history |
+| `safe_history` | `str` | Safe Analyst's argument history |
+| `neutral_history` | `str` | Neutral Analyst's argument history |
+| `history` | `str` | Combined debate transcript |
+| `latest_speaker` | `str` | Used to determine next speaker in rotation |
+| `current_risky_response` | `str` | Most recent Risky Analyst response |
+| `current_safe_response` | `str` | Most recent Safe Analyst response |
+| `current_neutral_response` | `str` | Most recent Neutral Analyst response |
+| `judge_decision` | `str` | Risk Judge's final ruling |
+| `count` | `int` | Number of debate turns taken |
