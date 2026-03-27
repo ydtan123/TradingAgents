@@ -273,6 +273,10 @@ graph = TradingAgentsGraph(config=config)
 | `"max_recur_limit"` | `100` | LangGraph recursion limit — prevents infinite loops |
 | `"data_vendors"` | see below | Category-level vendor config |
 | `"tool_vendors"` | `{}` | Tool-level vendor overrides (take precedence over `data_vendors`) |
+| `"data_dir"` | `"/Users/yluo/..."` (hardcoded) | Path to local data files. **Must be overridden** for local use — the default is an absolute path from the original developer's machine. |
+| `"results_dir"` | `"./results"` | Directory for output files. Override via `TRADINGAGENTS_RESULTS_DIR` env var. |
+| `"project_dir"` | auto-computed | Absolute path to the package root (auto-set, rarely needs overriding). |
+| `"data_cache_dir"` | auto-computed | Cache directory for downloaded data (auto-set from `project_dir`). |
 
 ### Default Data Vendors
 
@@ -317,16 +321,18 @@ Each of the five reasoning agents (Bull Researcher, Bear Researcher, Research Ma
 
 **Updating memory — `reflect_and_remember(returns_losses)`** (`tradingagents/graph/trading_graph.py:238`):
 
-Call this **after** you know the outcome of a trade (profit or loss). It triggers `Reflector` to generate a lesson for each agent's decision in that trade and writes it to that agent's ChromaDB collection. On the next run for a similar situation, the agent will retrieve and learn from that lesson.
+Call this **after** you know the outcome of a trade (profit or loss). It triggers `Reflector` (which uses `quick_thinking_llm`) to generate a lesson for each agent's decision in that trade and writes it to that agent's ChromaDB collection. On the next run for a similar situation, the agent will retrieve and learn from that lesson.
 
 ```python
 # After receiving trade outcome:
 graph.reflect_and_remember(returns_losses={"returns": 0.03, "losses": 0.0})
 ```
 
+> **Note:** `returns_losses` is passed directly into the LLM prompt as a string (e.g., `f"Returns: {returns_losses}"`). Any value works — a number, a dict, or a descriptive string — as long as it conveys the trade outcome meaningfully.
+
 Source files: `tradingagents/agents/utils/memory.py`, `tradingagents/graph/reflection.py`
 
-**Note:** ChromaDB is in-memory by default — memories do not persist across Python process restarts unless you configure persistent storage in `FinancialSituationMemory`.
+**Note:** ChromaDB is in-memory by default — memories do not persist across Python process restarts. There is no persistence parameter in the `FinancialSituationMemory` constructor; to enable persistence, replace `chromadb.Client(...)` with `chromadb.PersistentClient(path=...)` inside `memory.py:32`.
 
 ---
 
@@ -342,6 +348,7 @@ Source files: `tradingagents/agents/utils/memory.py`, `tradingagents/graph/refle
 | `tradingagents/graph/signal_processing.py` | Extracts BUY/SELL/HOLD from raw LLM output | `SignalProcessor.process_signal()` |
 | `tradingagents/agents/utils/agent_states.py` | TypedDict definitions for all state objects | `AgentState`, `InvestDebateState`, `RiskDebateState` |
 | `tradingagents/agents/utils/agent_utils.py` | Re-exports all tool functions | `get_stock_data`, `get_news`, etc. |
+| `tradingagents/agents/utils/*_tools.py` | Per-category tool implementations (`core_stock_tools.py`, `news_data_tools.py`, `fundamental_data_tools.py`, `technical_indicators_tools.py`) | individual `get_*` functions |
 | `tradingagents/agents/utils/memory.py` | ChromaDB-backed semantic memory | `FinancialSituationMemory` |
 | `tradingagents/agents/analysts/` | Four analyst agent implementations | `create_market_analyst()`, etc. |
 | `tradingagents/agents/researchers/` | Bull and Bear researcher implementations | `create_bull_researcher()`, etc. |
@@ -349,7 +356,7 @@ Source files: `tradingagents/agents/utils/memory.py`, `tradingagents/graph/refle
 | `tradingagents/agents/risk_mgmt/` | Risky, Safe, Neutral debator implementations | `create_risky_debator()`, etc. |
 | `tradingagents/agents/trader/trader.py` | Trader agent implementation | `create_trader()` |
 | `tradingagents/dataflows/interface.py` | Vendor routing with fallback | `route_to_vendor()` |
-| `tradingagents/dataflows/config.py` | Thread-local config store shared across the dataflow layer | `get_config()`, `set_config()` |
+| `tradingagents/dataflows/config.py` | Module-level config store shared across the dataflow layer | `get_config()`, `set_config()` |
 | `tradingagents/default_config.py` | Single source of truth for all runtime settings | `DEFAULT_CONFIG` |
-| `cli/main.py` | Interactive CLI using Rich + questionary | `main()` |
+| `cli/main.py` | Interactive CLI using Rich + questionary | `run_analysis()`, `analyze()` |
 | `main.py` | Programmatic example — run analysis directly | — |
