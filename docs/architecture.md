@@ -243,3 +243,113 @@ Tools are grouped into four categories. The `data_vendors` config key sets the v
 4. For single-vendor configs, execution stops after the first successful vendor. For comma-separated multi-vendor configs (e.g., `"alpha_vantage,yfinance"`), there is no early exit — the loop continues through all vendors in the fallback chain. Results from every successful vendor are concatenated and returned together.
 
 Source file: `tradingagents/dataflows/interface.py`
+
+---
+
+## 4. Configuration
+
+All runtime settings live in `DEFAULT_CONFIG` in `tradingagents/default_config.py`. Pass a modified copy to `TradingAgentsGraph(config=...)` to override any value.
+
+```python
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.default_config import DEFAULT_CONFIG
+
+config = {**DEFAULT_CONFIG, "max_debate_rounds": 3, "llm_provider": "anthropic"}
+graph = TradingAgentsGraph(config=config)
+```
+
+> **Note:** Changing `max_debate_rounds` or `max_risk_discuss_rounds` in the config currently has no effect. `ConditionalLogic` is instantiated without those config values (`trading_graph.py:99`). This is a known wiring gap — the config keys exist as intended design but are not yet plumbed through.
+
+### Config Fields
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `"llm_provider"` | `"openai"` | LLM backend. Options: `"openai"`, `"anthropic"`, `"google"`, `"openrouter"`, `"ollama"` |
+| `"deep_think_llm"` | `"o4-mini"` | Model name for Research Manager and Risk Judge |
+| `"quick_think_llm"` | `"gpt-4o-mini"` | Model name for all other agents |
+| `"backend_url"` | `"https://api.openai.com/v1"` | API base URL (useful for local models via Ollama or OpenRouter) |
+| `"max_debate_rounds"` | `1` | Intended: Bull↔Bear debate cycles. Currently not wired (see note above). |
+| `"max_risk_discuss_rounds"` | `1` | Intended: Risk team cycles. Currently not wired (see note above). |
+| `"max_recur_limit"` | `100` | LangGraph recursion limit — prevents infinite loops |
+| `"data_vendors"` | see below | Category-level vendor config |
+| `"tool_vendors"` | `{}` | Tool-level vendor overrides (take precedence over `data_vendors`) |
+
+### Default Data Vendors
+
+```python
+"data_vendors": {
+    "core_stock_apis": "yfinance",
+    "technical_indicators": "yfinance",
+    "fundamental_data": "alpha_vantage",
+    "news_data": "alpha_vantage",
+}
+```
+
+### Required Environment Variables
+
+Set these in `.env` (copy `.env.example` as a starting point):
+
+| Variable | Required when |
+|----------|--------------|
+| `OPENAI_API_KEY` | `llm_provider = "openai"` (default) |
+| `ANTHROPIC_API_KEY` | `llm_provider = "anthropic"` |
+| `GOOGLE_API_KEY` | `llm_provider = "google"` |
+| `ALPHA_VANTAGE_API_KEY` | `data_vendors` includes `"alpha_vantage"` |
+| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Live/paper trading via `trade.py` |
+
+---
+
+## 5. Memory & Reflection
+
+Each of the five reasoning agents (Bull Researcher, Bear Researcher, Research Manager, Trader, Risk Judge) has a dedicated `FinancialSituationMemory` instance backed by an **in-memory ChromaDB collection**. Memories are stored as vector embeddings and retrieved by semantic similarity.
+
+**Memory instances** (created in `TradingAgentsGraph.__init__()`, `tradingagents/graph/trading_graph.py:89`):
+
+| Variable | Used by |
+|----------|---------|
+| `bull_memory` | Bull Researcher |
+| `bear_memory` | Bear Researcher |
+| `invest_judge_memory` | Research Manager |
+| `trader_memory` | Trader |
+| `risk_manager_memory` | Risk Judge |
+
+**How agents use memory:** Before generating their response, each memory-backed agent queries its collection for past situations similar to the current one. Retrieved lessons are injected into the prompt as additional context.
+
+**Updating memory — `reflect_and_remember(returns_losses)`** (`tradingagents/graph/trading_graph.py:238`):
+
+Call this **after** you know the outcome of a trade (profit or loss). It triggers `Reflector` to generate a lesson for each agent's decision in that trade and writes it to that agent's ChromaDB collection. On the next run for a similar situation, the agent will retrieve and learn from that lesson.
+
+```python
+# After receiving trade outcome:
+graph.reflect_and_remember(returns_losses={"returns": 0.03, "losses": 0.0})
+```
+
+Source files: `tradingagents/agents/utils/memory.py`, `tradingagents/graph/reflection.py`
+
+**Note:** ChromaDB is in-memory by default — memories do not persist across Python process restarts unless you configure persistent storage in `FinancialSituationMemory`.
+
+---
+
+## 6. Key File Map
+
+| File | Purpose | Key symbol |
+|------|---------|------------|
+| `tradingagents/graph/trading_graph.py` | Main orchestrator — initializes LLMs, memories, tool nodes, and graph | `TradingAgentsGraph`, `propagate()` |
+| `tradingagents/graph/setup.py` | Builds and compiles the LangGraph `StateGraph` | `GraphSetup.setup_graph()` |
+| `tradingagents/graph/conditional_logic.py` | Routing decisions — tool-call loops and debate cycling | `ConditionalLogic` |
+| `tradingagents/graph/propagation.py` | Creates the initial `AgentState` for each `propagate()` call | `Propagator.create_initial_state()` |
+| `tradingagents/graph/reflection.py` | Post-trade learning — generates lessons and writes to memory | `Reflector` |
+| `tradingagents/graph/signal_processing.py` | Extracts BUY/SELL/HOLD from raw LLM output | `SignalProcessor.process_signal()` |
+| `tradingagents/agents/utils/agent_states.py` | TypedDict definitions for all state objects | `AgentState`, `InvestDebateState`, `RiskDebateState` |
+| `tradingagents/agents/utils/agent_utils.py` | Re-exports all tool functions | `get_stock_data`, `get_news`, etc. |
+| `tradingagents/agents/utils/memory.py` | ChromaDB-backed semantic memory | `FinancialSituationMemory` |
+| `tradingagents/agents/analysts/` | Four analyst agent implementations | `create_market_analyst()`, etc. |
+| `tradingagents/agents/researchers/` | Bull and Bear researcher implementations | `create_bull_researcher()`, etc. |
+| `tradingagents/agents/managers/` | Research Manager and Risk Manager implementations | `create_research_manager()`, etc. |
+| `tradingagents/agents/risk_mgmt/` | Risky, Safe, Neutral debator implementations | `create_risky_debator()`, etc. |
+| `tradingagents/agents/trader/trader.py` | Trader agent implementation | `create_trader()` |
+| `tradingagents/dataflows/interface.py` | Vendor routing with fallback | `route_to_vendor()` |
+| `tradingagents/dataflows/config.py` | Thread-local config store shared across the dataflow layer | `get_config()`, `set_config()` |
+| `tradingagents/default_config.py` | Single source of truth for all runtime settings | `DEFAULT_CONFIG` |
+| `cli/main.py` | Interactive CLI using Rich + questionary | `main()` |
+| `main.py` | Programmatic example — run analysis directly | — |
