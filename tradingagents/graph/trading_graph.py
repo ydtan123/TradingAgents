@@ -113,7 +113,11 @@ class TradingAgentsGraph:
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
             self.deep_thinking_llm,
-            self.tool_nodes,
+            self.bull_memory,
+            self.bear_memory,
+            self.trader_memory,
+            self.invest_judge_memory,
+            self.portfolio_manager_memory,
             self.conditional_logic,
         )
 

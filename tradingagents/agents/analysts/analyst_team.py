@@ -9,8 +9,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_all_indicators,
     get_news,
     get_global_news,
-    get_insider_sentiment,
-    get_insider_transactions,
     get_fundamentals,
     get_balance_sheet,
     get_cashflow,
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 _ANALYST_TOOLS = {
     "market": [get_stock_data, get_all_indicators],
     "social": [get_news],
-    "news": [get_news, get_global_news, get_insider_sentiment, get_insider_transactions],
+    "news": [get_news, get_global_news],
     "fundamentals": [get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement],
 }
 

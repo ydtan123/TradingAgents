@@ -1,8 +1,7 @@
 # TradingAgents/graph/setup.py
 
-from typing import Any, Dict
+from typing import Any
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
@@ -18,13 +17,21 @@ class GraphSetup:
         self,
         quick_thinking_llm: Any,
         deep_thinking_llm: Any,
-        tool_nodes: Dict[str, ToolNode],
+        bull_memory,
+        bear_memory,
+        trader_memory,
+        invest_judge_memory,
+        portfolio_manager_memory,
         conditional_logic: ConditionalLogic,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
-        self.tool_nodes = tool_nodes
+        self.bull_memory = bull_memory
+        self.bear_memory = bear_memory
+        self.trader_memory = trader_memory
+        self.invest_judge_memory = invest_judge_memory
+        self.portfolio_manager_memory = portfolio_manager_memory
         self.conditional_logic = conditional_logic
 
     def setup_graph(
