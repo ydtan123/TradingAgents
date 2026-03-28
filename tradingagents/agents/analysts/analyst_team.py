@@ -139,6 +139,8 @@ _BASE_PROMPT_TEMPLATE = (
     "For your reference, the current date is {current_date}. The company we want to look at is {ticker}"
 )
 
+_MAX_TOOL_ITERATIONS = 10
+
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
@@ -169,7 +171,7 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
     try:
         messages = list(initial_messages)
         loop = asyncio.get_running_loop()
-        while True:
+        for _ in range(_MAX_TOOL_ITERATIONS):
             result = await chain.ainvoke({"messages": messages})
             messages.append(result)
             if not result.tool_calls:
@@ -187,6 +189,8 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
                         tool_call_id=tool_call["id"],
                     )
                 )
+        logger.warning(f"{analyst_type} analyst hit max iterations ({_MAX_TOOL_ITERATIONS}), returning empty report.")
+        return _REPORT_FIELDS[analyst_type], ""
     except Exception as exc:
         logger.warning(f"{analyst_type} analyst failed: {exc}")
         return _REPORT_FIELDS[analyst_type], ""
@@ -211,6 +215,10 @@ def create_analyst_team(llm, selected_analysts):
 
         results = await asyncio.gather(*coroutines)
 
+        # Each analyst ran its tool-call loop against a local copy of messages.
+        # We do not write back to the shared messages field — the original sequential
+        # design cleared messages between analysts (Msg Clear nodes) so Bull Researcher
+        # never saw analyst messages anyway. Report fields carry all analyst output.
         state_update = {}
         for report_field, report in results:
             state_update[report_field] = report
