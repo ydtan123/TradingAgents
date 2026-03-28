@@ -1,7 +1,7 @@
 # Analyst Parallelization Design
 
 **Date:** 2026-03-28
-**Status:** Approved
+**Status:** Implemented
 
 ## Overview
 
@@ -37,7 +37,9 @@ START → Analyst Team → Bull Researcher
 
 ### New file: `tradingagents/agents/analysts/analyst_team.py`
 
-Implements `create_analyst_team(llm, tool_nodes, selected_analysts)`.
+Implements `create_analyst_team(llm, selected_analysts)`.
+
+Note: `tool_nodes` was dropped from the signature — tools are inlined directly in `_ANALYST_TOOLS` inside the module. `GraphSetup` no longer stores or receives `tool_nodes`.
 
 Returns an async LangGraph node function that:
 
@@ -53,16 +55,20 @@ Returns an async LangGraph node function that:
 
 ### Tool-call loop (per analyst)
 
+The loop is bounded by `_MAX_TOOL_ITERATIONS = 10` to prevent infinite loops if the LLM keeps requesting tools.
+
 ```python
-async def run_analyst(chain, tools_by_name, initial_messages):
+_MAX_TOOL_ITERATIONS = 10
+
+async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
     try:
         messages = list(initial_messages)
         loop = asyncio.get_running_loop()
-        while True:
+        for _ in range(_MAX_TOOL_ITERATIONS):
             result = await chain.ainvoke({"messages": messages})
             messages.append(result)
             if not result.tool_calls:
-                return result.content
+                return _REPORT_FIELDS[analyst_type], result.content
             for tool_call in result.tool_calls:
                 tool_result = await loop.run_in_executor(
                     None, tools_by_name[tool_call["name"]].invoke, tool_call["args"]
@@ -70,8 +76,9 @@ async def run_analyst(chain, tools_by_name, initial_messages):
                 messages.append(
                     ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
                 )
+        return _REPORT_FIELDS[analyst_type], ""  # max iterations hit
     except Exception:
-        return ""
+        return _REPORT_FIELDS[analyst_type], ""
 ```
 
 Tools are sync (yfinance, Alpha Vantage calls), so they run in a thread executor to avoid blocking the event loop.
