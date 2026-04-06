@@ -19,7 +19,7 @@ except ImportError:
 
 # Initialise the vendor config so route_to_vendor uses DEFAULT_CONFIG
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.config import set_config, get_config
 
 set_config(DEFAULT_CONFIG)
 
@@ -59,6 +59,22 @@ def _resolved_vendor(tool_name: str) -> str:
         return "unknown"
 
 
+def _with_vendor(tool_name: str, vendor: str, fn):
+    """Run fn() with a per-tool vendor override, then restore the original."""
+    cfg = get_config()
+    original = cfg.get("tool_vendors", {}).get(tool_name)
+    cfg.setdefault("tool_vendors", {})[tool_name] = vendor
+    set_config(cfg)
+    try:
+        return fn()
+    finally:
+        if original is None:
+            cfg.get("tool_vendors", {}).pop(tool_name, None)
+        else:
+            cfg["tool_vendors"][tool_name] = original
+        set_config(cfg)
+
+
 def check(label, tool_name, result, min_chars=50):
     """Validate a tool result and print status + optional verbose preview."""
     if not isinstance(result, str):
@@ -70,7 +86,7 @@ def check(label, tool_name, result, min_chars=50):
         "no data found", "no news found", "no global news found",
         "error fetching", "no fundamentals", "error:",
     ]
-    is_empty   = len(result.strip()) < min_chars
+    is_empty    = len(result.strip()) < min_chars
     looks_empty = any(p in result.lower() for p in no_data_phrases)
 
     vendor_tag = f"{CYAN}[{vendor}]{RESET}"
@@ -88,75 +104,109 @@ def check(label, tool_name, result, min_chars=50):
     return True
 
 
-# ── test cases ────────────────────────────────────────────────────────────────
+# ── test runner ───────────────────────────────────────────────────────────────
 
 results = {}
 
-def run(label, tool_name, fn):
+def run(label, tool_name, fn, forced_vendor=None):
+    """
+    forced_vendor: if set, temporarily override the tool's vendor for this call
+                   so the vendor tag shown in output reflects what we're testing.
+    """
     print(f"\n{BOLD}{label}{RESET}")
     try:
-        result = fn()
-        passed = check(label, tool_name, result)
+        if forced_vendor:
+            result = _with_vendor(tool_name, forced_vendor, fn)
+            # Show the forced vendor explicitly in the output tag
+            vendor_tag = f"{CYAN}[{forced_vendor}]{RESET}"
+            if not isinstance(result, str):
+                result = str(result)
+            no_data_phrases = [
+                "no data found", "no news found", "no global news found",
+                "error fetching", "no fundamentals", "error:",
+            ]
+            is_empty    = len(result.strip()) < 50
+            looks_empty = any(p in result.lower() for p in no_data_phrases)
+            if is_empty or looks_empty:
+                fail(f"{vendor_tag} {label}: thin/empty result ({len(result)} chars)")
+                if result.strip():
+                    print(f"    → {result.strip()[:200]}")
+                passed = False
+            else:
+                ok(f"{vendor_tag} {label}: {len(result):,} chars")
+                if VERBOSE:
+                    preview = textwrap.indent(result[:400].replace("\n", " "), "    ")
+                    print(f"{DIM}{preview}{'…' if len(result) > 400 else ''}{RESET}")
+                passed = True
+        else:
+            result = fn()
+            passed = check(label, tool_name, result)
     except Exception as exc:
-        vendor = _resolved_vendor(tool_name)
+        vendor = forced_vendor or _resolved_vendor(tool_name)
         fail(f"{CYAN}[{vendor}]{RESET} {label}: raised {type(exc).__name__}: {exc}")
         passed = False
     results[label] = passed
 
 
-run(
+# ── default-vendor tests (uses DEFAULT_CONFIG as-is) ─────────────────────────
+
+print(f"\n{BOLD}{'═'*52}{RESET}")
+print(f"{BOLD}Default vendor tests{RESET}")
+print(f"{BOLD}{'═'*52}{RESET}")
+
+run("get_stock_data",
     "get_stock_data",
-    "get_stock_data",
-    lambda: route_to_vendor("get_stock_data", TICKER, START_DATE, END_DATE),
-)
+    lambda: route_to_vendor("get_stock_data", TICKER, START_DATE, END_DATE))
 
-run(
+run("get_all_indicators",
     "get_all_indicators",
-    "get_all_indicators",
-    lambda: route_to_vendor(
-        "get_all_indicators",
-        TICKER,
-        ["rsi", "macd", "close_50_sma", "close_200_sma"],
-        DATE,
-        30,
-    ),
-)
+    lambda: route_to_vendor("get_all_indicators", TICKER,
+                            ["rsi", "macd", "close_50_sma", "close_200_sma"], DATE, 30))
 
-run(
+run("get_fundamentals",
     "get_fundamentals",
-    "get_fundamentals",
-    lambda: route_to_vendor("get_fundamentals", TICKER),
-)
+    lambda: route_to_vendor("get_fundamentals", TICKER))
 
-run(
+run("get_balance_sheet",
     "get_balance_sheet",
-    "get_balance_sheet",
-    lambda: route_to_vendor("get_balance_sheet", TICKER),
-)
+    lambda: route_to_vendor("get_balance_sheet", TICKER))
 
-run(
+run("get_cashflow",
     "get_cashflow",
-    "get_cashflow",
-    lambda: route_to_vendor("get_cashflow", TICKER),
-)
+    lambda: route_to_vendor("get_cashflow", TICKER))
 
-run(
+run("get_income_statement",
     "get_income_statement",
-    "get_income_statement",
-    lambda: route_to_vendor("get_income_statement", TICKER),
-)
+    lambda: route_to_vendor("get_income_statement", TICKER))
 
-run(
-    "get_news (ticker-specific)",
+run("get_news",
+    "get_news",
+    lambda: route_to_vendor("get_news", TICKER, START_DATE, END_DATE))
+
+run("get_global_news",
+    "get_global_news",
+    lambda: route_to_vendor("get_global_news", DATE, 7, 10))
+
+# ── Google vendor tests ───────────────────────────────────────────────────────
+
+print(f"\n{BOLD}{'═'*52}{RESET}")
+print(f"{BOLD}Google vendor tests{RESET}")
+print(f"{BOLD}{'═'*52}{RESET}")
+
+run("get_news [google]",
     "get_news",
     lambda: route_to_vendor("get_news", TICKER, START_DATE, END_DATE),
-)
+    forced_vendor="google")
 
-run(
-    "get_global_news",
+run("get_global_news [google]",
     "get_global_news",
     lambda: route_to_vendor("get_global_news", DATE, 7, 10),
-)
+    forced_vendor="google")
+
+run("get_fundamentals [google]",
+    "get_fundamentals",
+    lambda: route_to_vendor("get_fundamentals", TICKER, DATE),
+    forced_vendor="google")
 
 # ── summary ───────────────────────────────────────────────────────────────────
 
@@ -166,10 +216,11 @@ total  = len(results)
 print(f"\n{'─'*52}")
 print(f"{BOLD}Results: {passed}/{total} tools returning data{RESET}")
 for label, ok_flag in results.items():
-    tool_name = {
-        "get_news (ticker-specific)": "get_news",
-    }.get(label, label.replace(" ", "_"))
-    vendor = _resolved_vendor(tool_name)
+    # Derive canonical tool name for vendor lookup
+    base = label.split(" [")[0]  # strip " [google]" suffix if present
+    tool_key = {"get_news": "get_news", "get_global_news": "get_global_news"}.get(base, base)
+    forced = "google" if "[google]" in label else None
+    vendor = forced or _resolved_vendor(tool_key)
     status = f"{GREEN}PASS{RESET}" if ok_flag else f"{RED}FAIL{RESET}"
     print(f"  [{status}] {CYAN}[{vendor}]{RESET} {label}")
 
