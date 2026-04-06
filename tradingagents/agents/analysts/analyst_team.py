@@ -169,12 +169,22 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
     try:
         messages = list(initial_messages)
         loop = asyncio.get_running_loop()
-        for _ in range(_MAX_TOOL_ITERATIONS):
+        for iteration in range(_MAX_TOOL_ITERATIONS):
             result = await chain.ainvoke({"messages": messages})
             messages.append(result)
             if not result.tool_calls:
                 logger.info(f"{analyst_type} analyst completed report.")
+                logger.debug(
+                    f"{analyst_type} analyst: iteration={iteration} "
+                    f"tool_calls=NONE → returning report "
+                    f"(content length={len(result.content) if result.content else 0})"
+                )
                 return _REPORT_FIELDS[analyst_type], result.content
+            tool_names = [tc["name"] for tc in result.tool_calls]
+            logger.debug(
+                f"{analyst_type} analyst: iteration={iteration} "
+                f"tool_calls={tool_names}"
+            )
             for tool_call in result.tool_calls:
                 tool_output = await loop.run_in_executor(
                     None,
@@ -204,12 +214,14 @@ def create_analyst_team(llm, selected_analysts):
         ticker = state["company_of_interest"]
         initial_messages = state["messages"]
 
-        coroutines = []
-        for analyst_type in selected_analysts:
-            chain, tools_by_name = _build_chain(analyst_type, llm, current_date, ticker)
-            coroutines.append(
-                _run_analyst(analyst_type, chain, tools_by_name, initial_messages)
+        coroutines = [
+            _run_analyst(
+                analyst_type,
+                *_build_chain(analyst_type, llm, current_date, ticker),
+                initial_messages,
             )
+            for analyst_type in selected_analysts
+        ]
 
         results = await asyncio.gather(*coroutines)
 

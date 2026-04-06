@@ -246,6 +246,23 @@ def get_stock_stats_indicators_window(
     return result_str
 
 
+def get_all_indicators_yfinance(
+    symbol: Annotated[str, "ticker symbol of the company"],
+    indicators: Annotated[list, "list of technical indicator names to retrieve"],
+    curr_date: Annotated[str, "The current trading date, YYYY-mm-dd"],
+    look_back_days: Annotated[int, "how many days to look back"] = 30,
+) -> str:
+    """Batch version: retrieve multiple technical indicators in a single call."""
+    parts = []
+    for indicator in indicators:
+        try:
+            result = get_stock_stats_indicators_window(symbol, indicator, curr_date, look_back_days)
+            parts.append(result)
+        except Exception as e:
+            parts.append(f"## {indicator}\nError: {e}")
+    return "\n\n".join(parts)
+
+
 def _get_stock_stats_bulk(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to calculate"],

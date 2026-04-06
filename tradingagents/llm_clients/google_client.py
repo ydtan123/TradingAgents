@@ -9,12 +9,16 @@ from .validators import validate_model
 class NormalizedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
     """ChatGoogleGenerativeAI with normalized content output.
 
-    Gemini 3 models return content as list of typed blocks.
-    This normalizes to string for consistent downstream handling.
+    Gemini models may return content as a list of typed blocks.
+    This normalizes to string for consistent downstream handling,
+    covering both sync (invoke) and async (ainvoke) paths.
     """
 
     def invoke(self, input, config=None, **kwargs):
         return normalize_content(super().invoke(input, config, **kwargs))
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        return normalize_content(await super().ainvoke(input, config, **kwargs))
 
 
 class GoogleClient(BaseLLMClient):

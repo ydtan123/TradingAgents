@@ -1,5 +1,10 @@
 from typing import Optional
+import asyncio
 import datetime
+import logging
+import threading
+from collections import defaultdict
+from langchain_core.callbacks import BaseCallbackHandler
 import typer
 from pathlib import Path
 from functools import wraps
@@ -1215,6 +1220,321 @@ def analyze(
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
     run_analysis(checkpoint=checkpoint)
+
+
+# ─── Non-interactive (run) mode ───────────────────────────────────────────────
+
+def _configure_logging(verbose: bool, log_path: Path) -> logging.Logger:
+    """Configure logging to both console and log_path. Returns the run logger.
+
+    The 'tradingagents' root namespace is configured so that sub-module
+    loggers (e.g. analyst_team) also flow through to console and file.
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    root = logging.getLogger("tradingagents")
+    root.setLevel(level)
+    # Remove stale handlers from previous calls (e.g. multiple run() invocations)
+    root.handlers.clear()
+
+    ch = logging.StreamHandler()
+    ch.setLevel(level)
+    ch.setFormatter(logging.Formatter(fmt))
+    root.addHandler(ch)
+
+    fh = logging.FileHandler(log_path)
+    fh.setLevel(logging.DEBUG)          # always capture DEBUG in file
+    fh.setFormatter(logging.Formatter(fmt))
+    root.addHandler(fh)
+
+    return logging.getLogger("tradingagents.run")
+
+
+class _PerAgentCallTracker(BaseCallbackHandler):
+    """Tracks LLM calls per LangGraph node via on_chat_model_start metadata."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self.total_llm_calls = 0
+        self.per_node: dict[str, int] = defaultdict(int)
+
+    def on_chat_model_start(self, serialized, messages, **kwargs) -> None:
+        node = (kwargs.get("metadata") or {}).get("langgraph_node", "unknown")
+        with self._lock:
+            self.total_llm_calls += 1
+            self.per_node[node] += 1
+
+
+def _summarise_report(
+    report_text: str,
+    llm,
+    label: str,
+    logger: logging.Logger,
+) -> list[str]:
+    """Call the quick-thinking LLM and return exactly 3 bullet-point strings."""
+    if not report_text or not report_text.strip():
+        return ["• (no report generated)"]
+    prompt = (
+        "Summarize the following analyst report in exactly 3 concise bullet points.\n"
+        "Each bullet must be a single short sentence. "
+        "Use '•' as the bullet character. "
+        "Output only the 3 bullets — no preamble, no numbering, no extra text.\n\n"
+        f"{report_text}"
+    )
+    logger.debug(f"Summarising {label} ...")
+    response = llm.invoke(prompt)
+    raw = response.content if hasattr(response, "content") else str(response)
+    bullets = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
+    bullets = [b if b.startswith("•") else f"• {b}" for b in bullets]
+    if len(bullets) < 3:
+        bullets += ["• (no additional data)"] * (3 - len(bullets))
+    return bullets[:3]
+
+
+async def _run_single_ticker_async(
+    ticker: str,
+    date: str,
+    selected_analysts: list[str],
+    config: dict,
+    verbose: bool,
+    logger: logging.Logger,
+    call_tracker: "_PerAgentCallTracker",
+) -> tuple[dict, str]:
+    """Run one ticker asynchronously. Returns (final_state, decision)."""
+    logger.info(
+        f"[{ticker}] Starting | date={date} | analysts={', '.join(selected_analysts)}"
+    )
+
+    graph = TradingAgentsGraph(
+        selected_analysts,
+        config=config,
+        debug=False,
+        callbacks=[call_tracker],
+    )
+
+    init_state = graph.propagator.create_initial_state(ticker, date)
+    args = graph.propagator.get_graph_args(callbacks=[call_tracker])
+
+    if verbose:
+        # Stream chunks so we can emit per-node DEBUG events
+        chunks: list[dict] = []
+        async for chunk in graph.graph.astream(init_state, **args):
+            for key in (
+                "market_report", "sentiment_report", "news_report",
+                "fundamentals_report", "trader_investment_plan",
+                "investment_plan", "final_trade_decision",
+            ):
+                val = chunk.get(key)
+                if val:
+                    logger.debug(
+                        f"[{ticker}] {key} ready ({len(str(val))} chars)"
+                    )
+            chunks.append(chunk)
+        final_state = chunks[-1]
+        decision = graph.process_signal(final_state["final_trade_decision"])
+    else:
+        # ainvoke handles async nodes correctly
+        final_state = await graph.graph.ainvoke(init_state, **args)
+        graph.curr_state = final_state
+        graph._log_state(date, final_state)
+        decision = graph.process_signal(final_state["final_trade_decision"])
+
+    logger.info(f"[{ticker}] Decision: {decision}")
+
+    # Auto-save — no prompt
+    results_dir = Path(config["results_dir"]) / ticker / date
+    try:
+        save_report_to_disk(final_state, ticker, results_dir)
+        logger.info(f"[{ticker}] Report saved → {results_dir.resolve()}")
+    except Exception as exc:
+        logger.warning(f"[{ticker}] Failed to save report: {exc}")
+
+    return final_state, decision
+
+
+def _run_single_ticker(
+    ticker: str,
+    date: str,
+    selected_analysts: list[str],
+    config: dict,
+    verbose: bool,
+    logger: logging.Logger,
+    call_tracker: "_PerAgentCallTracker",
+) -> tuple[dict, str]:
+    """Synchronous wrapper around _run_single_ticker_async."""
+    return asyncio.run(
+        _run_single_ticker_async(ticker, date, selected_analysts, config, verbose, logger, call_tracker)
+    )
+
+
+@app.command()
+def run(
+    ticker: list[str] = typer.Option(
+        ...,
+        "--ticker", "-t",
+        help="Ticker symbol(s). Repeat or comma-separate: --ticker AAPL,NVDA",
+    ),
+    date: Optional[str] = typer.Option(
+        None,
+        "--date", "-d",
+        help="Analysis date YYYY-MM-DD. Defaults to today.",
+    ),
+    skip: list[str] = typer.Option(
+        [],
+        "--skip", "-s",
+        help="Analyst(s) to skip: market, social, news, fundamentals.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose", "-v",
+        is_flag=True,
+        help="Enable DEBUG-level logging.",
+    ),
+):
+    """Non-interactive batch analysis. No prompts; settings from DEFAULT_CONFIG."""
+    # ── flatten + deduplicate tickers ─────────────────────────────────────────
+    tickers: list[str] = []
+    for t in ticker:
+        for part in t.split(","):
+            part = part.strip().upper()
+            if part and part not in tickers:
+                tickers.append(part)
+    if not tickers:
+        typer.echo("Error: at least one --ticker is required.", err=True)
+        raise typer.Exit(1)
+
+    # ── validate date ─────────────────────────────────────────────────────────
+    if date is None:
+        date = datetime.datetime.now().strftime("%Y-%m-%d")
+    else:
+        try:
+            datetime.datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            typer.echo(f"Error: --date must be YYYY-MM-DD, got '{date}'", err=True)
+            raise typer.Exit(1)
+
+    # ── validate skip ─────────────────────────────────────────────────────────
+    valid = set(ANALYST_ORDER)
+    skip_set: set[str] = set()
+    for s in skip:
+        for part in s.split(","):
+            part = part.strip().lower()
+            if part not in valid:
+                typer.echo(
+                    f"Error: unknown analyst '{part}'. "
+                    f"Valid values: {', '.join(sorted(valid))}",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            skip_set.add(part)
+    selected_analysts = [a for a in ANALYST_ORDER if a not in skip_set]
+    if not selected_analysts:
+        typer.echo("Error: all analysts skipped — keep at least one.", err=True)
+        raise typer.Exit(1)
+
+    # ── logging ───────────────────────────────────────────────────────────────
+    log_dir = Path(DEFAULT_CONFIG["results_dir"])
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"run_{ts}.log"
+    logger = _configure_logging(verbose, log_path)
+    logger.info(
+        f"TradingAgents run | tickers={tickers} date={date} "
+        f"skip={sorted(skip_set)} verbose={verbose}"
+    )
+    console.print(f"[dim]Log → {log_path}[/dim]\n")
+
+    # ── config (defaults; no interactive prompts) ─────────────────────────────
+    config = DEFAULT_CONFIG.copy()
+
+    # ── shared call tracker (accumulates across all tickers) ──────────────────
+    call_tracker = _PerAgentCallTracker()
+
+    # ── analysis loop ─────────────────────────────────────────────────────────
+    results: list[tuple[str, str, dict]] = []
+    for t in tickers:
+        try:
+            fs, decision = _run_single_ticker(
+                t, date, selected_analysts, config, verbose, logger, call_tracker
+            )
+            results.append((t, decision, fs))
+        except Exception as exc:
+            logger.error(f"[{t}] Analysis failed: {exc}", exc_info=True)
+            results.append((t, "ERROR", {}))
+
+    # ── snapshot call counts BEFORE summary LLM calls ─────────────────────────
+    analysis_llm_calls = call_tracker.total_llm_calls
+    analysis_per_node = dict(call_tracker.per_node)
+
+    # ── summary table ─────────────────────────────────────────────────────────
+    console.print()
+    console.print(Rule("Run Summary", style="bold green"))
+    tbl = Table(title=f"Analysis Results — {date}", box=box.ROUNDED)
+    tbl.add_column("Ticker", style="bold cyan")
+    tbl.add_column("Date")
+    tbl.add_column("Decision", style="bold")
+    for t, decision, _ in results:
+        color = {"BUY": "green", "SELL": "red"}.get(decision.upper(), "yellow")
+        tbl.add_row(t, date, f"[{color}]{decision}[/{color}]")
+    console.print(tbl)
+
+    # ── LLM call breakdown ────────────────────────────────────────────────────
+    console.print()
+    console.print(Rule("LLM Call Breakdown (analysis phase)", style="bold blue"))
+    console.print(f"[bold]Total analysis LLM calls:[/bold] {analysis_llm_calls}")
+    if analysis_per_node:
+        call_tbl = Table(box=box.SIMPLE, show_header=True)
+        call_tbl.add_column("Agent / Node", style="cyan")
+        call_tbl.add_column("Calls", justify="right")
+        for node, count in sorted(analysis_per_node.items(), key=lambda x: -x[1]):
+            call_tbl.add_row(node, str(count))
+        console.print(call_tbl)
+
+    # ── per-ticker detail with LLM-generated summaries ────────────────────────
+    from tradingagents.llm_clients.factory import create_llm_client as _create_llm
+    summary_llm = _create_llm(
+        config["llm_provider"],
+        config["quick_think_llm"],
+        config.get("backend_url"),
+    ).get_llm()
+
+    console.print()
+    console.print(Rule("Per-Ticker Detail", style="bold magenta"))
+    for t, decision, fs in results:
+        console.print()
+        console.print(Rule(f"{t}  |  {date}", style="cyan", align="left"))
+        if not fs:
+            console.print("[red]  Analysis failed — no data available.[/red]")
+            continue
+        color = {"BUY": "green", "SELL": "red"}.get(decision.upper(), "yellow")
+        console.print(f"  [bold]Decision:[/bold] [{color}]{decision}[/{color}]")
+
+        sections = [
+            ("Market Report",    "market_report"),
+            ("Social Sentiment", "sentiment_report"),
+            ("News",             "news_report"),
+            ("Fundamentals",     "fundamentals_report"),
+            ("Final Decision",   "final_trade_decision"),
+        ]
+        for label, key in sections:
+            text = fs.get(key, "")
+            if not text:
+                continue
+            console.print(f"\n  [bold]{label}[/bold]")
+            for bullet in _summarise_report(text, summary_llm, f"{t}/{label}", logger):
+                console.print(f"    {bullet}")
+
+    summary_calls = call_tracker.total_llm_calls - analysis_llm_calls
+    if summary_calls:
+        console.print(
+            f"\n[dim]  (+{summary_calls} LLM calls for report summarisation)[/dim]"
+        )
+    logger.info(
+        f"Run complete. analysis_calls={analysis_llm_calls} "
+        f"summary_calls={summary_calls} total={call_tracker.total_llm_calls}"
+    )
 
 
 if __name__ == "__main__":

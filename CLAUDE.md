@@ -25,10 +25,13 @@ python main.py
 
 ### Run tests
 ```bash
-python test.py  # ad-hoc timing test for technical indicators
+pytest                                         # run all tests
+pytest tests/agents/analysts/                 # run a specific directory
+pytest tests/agents/analysts/test_analyst_team.py  # run a single file
+pytest tests/agents/analysts/test_analyst_team.py::TestRunAnalyst::test_no_tool_calls_returns_report  # run a single test
 ```
 
-There is no formal test suite. `test.py` benchmarks `get_stock_stats_indicators_window()` execution time.
+Tests live under `tests/` and use pytest with `asyncio_mode = auto` (see `pytest.ini`). Heavy third-party packages (pandas, yfinance, chromadb, etc.) are stubbed in `tests/agents/analysts/conftest.py` so the analyst-team tests run without real dependencies. `test.py` (root) is a separate ad-hoc timing benchmark for `get_stock_stats_indicators_window()`.
 
 ## Architecture
 
@@ -38,11 +41,11 @@ There is no formal test suite. `test.py` benchmarks `get_stock_stats_indicators_
 Analyst Team → Researcher Team (debate) → Trader → Risk Team (debate) → Portfolio Manager
 ```
 
-1. **Analyst Team** — Four specialists run in parallel, each producing a report:
-   - Market Analyst: technical indicators (MACD, RSI, SMA, etc.)
-   - Social Media Analyst: Reddit sentiment
-   - News Analyst: recent news events
-   - Fundamentals Analyst: balance sheet, income statement, cash flow
+1. **Analyst Team** — Four specialists run **concurrently via `asyncio.gather`** inside a single LangGraph node (`analyst_team.py`), each running an independent tool-call loop (up to 10 iterations). Results are written directly to state fields; messages are not shared between analysts.
+   - Market Analyst → `market_report`: technical indicators (MACD, RSI, SMA, etc.)
+   - Social Media Analyst → `sentiment_report`: company news/Reddit sentiment
+   - News Analyst → `news_report`: macro/global news
+   - Fundamentals Analyst → `fundamentals_report`: balance sheet, income statement, cash flow
 
 2. **Researcher Team** — Bull and Bear researchers debate over analyst reports for `max_debate_rounds` cycles. A Research Manager synthesizes into an investment recommendation.
 
@@ -79,11 +82,16 @@ DEFAULT_CONFIG = {
     "backend_url": "https://api.openai.com/v1",
     "max_debate_rounds": 1,            # Bull vs Bear research debate cycles
     "max_risk_discuss_rounds": 1,      # Risk team discussion cycles
+    "max_recur_limit": 100,            # LangGraph recursion limit
     "data_vendors": {
-        "core_stock_apis": "yfinance",
-        "technical_indicators": "yfinance",
-        "fundamental_data": "alpha_vantage",
-        "news_data": "alpha_vantage",
+        "core_stock_apis": "yfinance",       # Options: yfinance, alpha_vantage, local
+        "technical_indicators": "yfinance",  # Options: yfinance, alpha_vantage, local
+        "fundamental_data": "alpha_vantage", # Options: openai, alpha_vantage, local
+        "news_data": "alpha_vantage",        # Options: openai, alpha_vantage, google, local
+    },
+    "tool_vendors": {
+        # Per-tool overrides; take precedence over data_vendors category defaults
+        # e.g. "get_news": "openai"
     },
 }
 ```
@@ -92,11 +100,13 @@ Pass a modified copy to `TradingAgentsGraph(config=...)` to override defaults.
 
 ### State Flow
 
-The LangGraph state dict (`AgentState`) accumulates reports as the graph traverses nodes. Sub-states (`InvestDebateState`, `RiskDebateState`) track debate history and round counts. These are defined in `tradingagents/agents/utils/agent_states.py`.
+The LangGraph state dict (`AgentState`) accumulates reports as the graph traverses nodes. Sub-states (`InvestDebateState`, `RiskDebateState`) track debate history and round counts — defined in `tradingagents/agents/utils/agent_states.py`. `ConditionalLogic` routes debate cycles based on `count` fields in these sub-states. `Propagator` initializes the state; `SignalProcessor` extracts `BUY/SELL/HOLD` from the final verbose decision using a quick LLM call.
+
+After each run, `propagate()` writes a full state JSON log to `eval_results/<ticker>/TradingAgentsStrategy_logs/`. Call `reflect_and_remember(returns)` after observing real returns to update ChromaDB memories for each agent role.
 
 ### Data Vendors
 
-`tradingagents/dataflows/` abstracts multiple data sources. `interface.py` selects the implementation based on config. `local.py` provides offline caching. Most data tools accept a ticker + date and return structured strings consumed directly by LLM agents.
+`tradingagents/dataflows/` abstracts multiple data sources. `interface.py` routes calls to the correct vendor based on `data_vendors` (category-level) and `tool_vendors` (per-tool override) config keys. `local.py` provides offline caching. Most data tools accept a ticker + date and return structured strings consumed directly by LLM agents. Tool wrapper functions in `agent_utils.py` are the single call site for all data — agents never import from `dataflows` directly.
 
 ### Environment Variables
 

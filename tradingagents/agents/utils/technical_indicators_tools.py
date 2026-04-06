@@ -1,6 +1,29 @@
 from langchain_core.tools import tool
-from typing import Annotated
+from typing import Annotated, List
 from tradingagents.dataflows.interface import route_to_vendor
+
+@tool
+def get_all_indicators(
+    symbol: Annotated[str, "ticker symbol of the company"],
+    indicators: Annotated[List[str], "list of technical indicator names to retrieve in one batch call"],
+    curr_date: Annotated[str, "The current trading date you are trading on, YYYY-mm-dd"],
+    look_back_days: Annotated[int, "how many days to look back"] = 30,
+) -> str:
+    """
+    Retrieve multiple technical indicators for a ticker in a single batched call.
+    Preferred over calling get_indicators repeatedly — pass all chosen indicator
+    names as a list and receive all results concatenated.
+    Args:
+        symbol (str): Ticker symbol, e.g. AAPL
+        indicators (list[str]): List of indicator names, e.g. ['rsi', 'macd', 'close_50_sma']
+        curr_date (str): Current trading date YYYY-mm-dd
+        look_back_days (int): How many days to look back, default 30
+    Returns:
+        str: Concatenated indicator data for all requested indicators.
+    """
+    indicators_normalized = [i.strip().lower() for i in indicators if i.strip()]
+    return route_to_vendor("get_all_indicators", symbol, indicators_normalized, curr_date, look_back_days)
+
 
 @tool
 def get_indicators(
