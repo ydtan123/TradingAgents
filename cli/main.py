@@ -1338,6 +1338,7 @@ async def _run_single_ticker_async(
         # ainvoke handles async nodes correctly
         final_state = await graph.graph.ainvoke(init_state, **args)
         graph.curr_state = final_state
+        graph.ticker = ticker
         graph._log_state(date, final_state)
         decision = graph.process_signal(final_state["final_trade_decision"])
 

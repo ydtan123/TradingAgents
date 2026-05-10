@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
         "core_stock_apis": "alpha_vantage",       # Options: alpha_vantage, yfinance
         "technical_indicators": "alpha_vantage",  # Options: alpha_vantage, yfinance
         "fundamental_data": "alpha_vantage",      # Options: alpha_vantage, yfinance
-        "news_data": "alpha_vantage",             # Options: alpha_vantage, yfinance
+        "news_data": "google",                    # Options: alpha_vantage, yfinance, google
     },
     # Tool-level configuration (takes precedence over category-level)
     "tool_vendors": {
