@@ -4,6 +4,7 @@ import logging
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from tradingagents.dataflows.interface import get_vendor, get_category_for_method
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_all_indicators,
@@ -137,7 +138,13 @@ _BASE_PROMPT_TEMPLATE = (
     "For your reference, the current date is {current_date}. The company we want to look at is {ticker}"
 )
 
-_MAX_TOOL_ITERATIONS = 10
+_MAX_TOOL_ITERATIONS = {
+    "market": 5,
+    "social": 3,
+    "news": 4,
+    "fundamentals": 6,
+}
+_DEFAULT_ITERATIONS = 5
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
@@ -169,8 +176,12 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
     try:
         messages = list(initial_messages)
         loop = asyncio.get_running_loop()
-        for iteration in range(_MAX_TOOL_ITERATIONS):
-            result = await chain.ainvoke({"messages": messages})
+        max_iter = _MAX_TOOL_ITERATIONS.get(analyst_type, _DEFAULT_ITERATIONS)  # type: ignore[union-attr]
+        for iteration in range(max_iter):
+            result = await chain.ainvoke(
+                {"messages": messages},
+                config={"metadata": {"analyst_type": analyst_type}},
+            )
             messages.append(result)
             if not result.tool_calls:
                 logger.info(f"{analyst_type} analyst completed report.")
@@ -186,6 +197,15 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
                 f"tool_calls={tool_names}"
             )
             for tool_call in result.tool_calls:
+                _tname = tool_call["name"]
+                try:
+                    _vendor = get_vendor(get_category_for_method(_tname), _tname)
+                except Exception:
+                    _vendor = "unknown"
+                logger.info(
+                    "[TOOL] analyst=%-15s tool=%-30s vendor=%s",
+                    analyst_type, _tname, _vendor,
+                )
                 tool_output = await loop.run_in_executor(
                     None,
                     tools_by_name[tool_call["name"]].invoke,
@@ -197,7 +217,7 @@ async def _run_analyst(analyst_type, chain, tools_by_name, initial_messages):
                         tool_call_id=tool_call["id"],
                     )
                 )
-        logger.warning(f"{analyst_type} analyst hit max iterations ({_MAX_TOOL_ITERATIONS}), returning empty report.")
+        logger.warning(f"{analyst_type} analyst hit max iterations ({max_iter}), returning empty report.")
         return _REPORT_FIELDS[analyst_type], ""
     except Exception as exc:
         logger.warning(f"{analyst_type} analyst failed: {exc}")
